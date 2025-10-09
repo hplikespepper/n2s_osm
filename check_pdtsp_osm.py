@@ -34,7 +34,7 @@ def make_successor_table_from_seq(seq):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--place", type=str, default="Boca Raton, Florida, USA")
-    ap.add_argument("--graph_size", type=int, default=50)   # 50 节点 = 25 对
+    ap.add_argument("--graph_size", type=int, default=20)   # 20 节点 = 10 对
     ap.add_argument("--capacity", type=int, default=3)
     ap.add_argument("--seed", type=int, default=2025)
     ap.add_argument("--out_png", type=str, default="figs/pdtsp_osm_check.png")

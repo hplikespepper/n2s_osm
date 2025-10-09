@@ -18,6 +18,16 @@ def build_drive_graph(place: str):
         G = ox.distance.add_edge_lengths(G)
     else:
         raise RuntimeError("Unsupported osmnx version: cannot find add_edge_lengths")
+    
+    # 确保图是强连通的，只保留最大强连通分量
+    # 这样可以避免采样到不可达的节点
+    if not nx.is_strongly_connected(G):
+        # 获取所有强连通分量，按大小排序
+        sccs = list(nx.strongly_connected_components(G))
+        largest_scc = max(sccs, key=len)
+        # 只保留最大强连通分量的子图
+        G = G.subgraph(largest_scc).copy()
+        print(f"Warning: Graph was not strongly connected. Using largest SCC with {len(largest_scc)} nodes out of {sum(len(scc) for scc in sccs)} total nodes.")
 
     return G
 
