@@ -11,12 +11,61 @@
 import argparse
 import os
 import torch
+import matplotlib.pyplot as plt
+import osmnx as ox
 
 # === 按你之前新增的文件路径导入 ===
 from problems.problem_pdtsp_osm import PDTSP_OSM
 from data.osm_pdp_dataset import OSMOnlinePDPSDataset
 from data.osm_utils import build_drive_graph
-from utils.viz_osmnx import plot_solution_on_osm
+
+def plot_nodes_only(G, sample, out_path):
+    """只显示节点，不显示路径"""
+    fig, ax = plt.subplots(figsize=(12, 12))
+    ox.plot_graph(G, node_size=2, edge_color='lightgray', edge_linewidth=0.5,
+                  show=False, close=False, ax=ax)
+    
+    num_nodes = len(sample['node2osmid'])
+    num_pairs = (num_nodes - 1) // 2
+    
+    # Depot
+    depot_osmid = sample['node2osmid'][0]
+    depot_x = G.nodes[depot_osmid]['x']
+    depot_y = G.nodes[depot_osmid]['y']
+    ax.scatter(depot_x, depot_y, s=300, c='green', marker='*', 
+               edgecolors='black', linewidths=2, label='Depot', zorder=5)
+    
+    # Legend
+    ax.scatter([], [], s=150, c='white', marker='o', edgecolors='blue', 
+               linewidths=2, label='Pick up')
+    ax.scatter([], [], s=150, c='white', marker='s', edgecolors='orange', 
+               linewidths=2, label='Drop off')
+    
+    # Pickup/Delivery nodes
+    for i in range(1, num_pairs + 1):
+        # Pickup
+        pickup_osmid = sample['node2osmid'][i]
+        pickup_x = G.nodes[pickup_osmid]['x']
+        pickup_y = G.nodes[pickup_osmid]['y']
+        ax.scatter(pickup_x, pickup_y, s=150, c='white', marker='o',
+                   edgecolors='blue', linewidths=2, zorder=4)
+        ax.text(pickup_x, pickup_y, f'{i}', fontsize=8, ha='center', va='center',
+                color='black', weight='bold', zorder=6)
+        
+        # Delivery
+        delivery_osmid = sample['node2osmid'][i + num_pairs]
+        delivery_x = G.nodes[delivery_osmid]['x']
+        delivery_y = G.nodes[delivery_osmid]['y']
+        ax.scatter(delivery_x, delivery_y, s=150, c='white', marker='s',
+                   edgecolors='orange', linewidths=2, zorder=4)
+        ax.text(delivery_x, delivery_y, f'{i}', fontsize=8, ha='center', va='center',
+                color='black', weight='bold', zorder=6)
+    
+    ax.set_title(f'PDTSP OSM Nodes\nTotal: {num_nodes} (Depot + {num_pairs} pairs)',
+                 fontsize=14, weight='bold')
+    ax.legend(loc='upper right', fontsize=10)
+    plt.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close()
 
 def make_successor_table_from_seq(seq):
     """
@@ -75,15 +124,16 @@ def main():
 
     # get_costs 需要 batch 维度；把 sample 包装成 batch（B=1）
     batch = {k: (v.unsqueeze(0) if isinstance(v, torch.Tensor) else v) for k, v in sample.items()}
-    # 代价使用 batch['dist']（真实路网长度）
-    cost = PDTSP_OSM.get_costs(batch, rec).item()
+    # 创建 PDTSP_OSM 实例并计算代价
+    problem = PDTSP_OSM(p_size=args.graph_size, osm_place=args.place, capacity=args.capacity)
+    cost = problem.get_costs(batch, rec).item()
     print(f"[check] route length on real map: {cost:.1f} (units = meters if dist is 'length')")
 
-    # 4) 在真实地图上画出这条示意路线
+    # 4) 在真实地图上只显示节点（不显示路径）
     G = build_drive_graph(args.place)
-    # plot_solution_on_osm 期望的是单样本的 dict，所以把张量去掉 batch 维度
+    # plot_nodes_only 期望的是单样本的 dict，所以把张量去掉 batch 维度
     single_sample = {k: (v[0] if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
-    plot_solution_on_osm(G, single_sample, seq, args.out_png)
+    plot_nodes_only(G, single_sample, args.out_png)
     print(f"[check] saved map visualization to: {args.out_png}")
 
     print("[check] PDTSP_OSM is loadable and working (data fields, cost, plotting all OK).")

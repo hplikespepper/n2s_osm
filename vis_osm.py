@@ -29,19 +29,58 @@ OUTPUT_DIR = "visualizations"
 # ======================================================
 
 
-def plot_solution_on_osm(G, sample, solution_path, coordinates, best_cost, instance_id, output_path):
+def adjacency_list_to_path(adj_list):
+    """
+    将邻接表形式的路径转换为节点访问顺序。
+    
+    Args:
+        adj_list: 邻接表，adj_list[i] 表示节点i指向的下一个节点
+    
+    Returns:
+        path: 节点访问顺序列表
+    """
+    if not adj_list:
+        return []
+    
+    path = [0]  # 从depot (节点0) 开始
+    current = 0
+    visited = set([0])
+    
+    while len(path) <= len(adj_list):
+        next_node = adj_list[current]
+        if next_node in visited and next_node == 0:
+            # 回到depot，路径结束
+            path.append(0)
+            break
+        if next_node in visited:
+            # 检测到环路（不应该发生）
+            print(f"Warning: Cycle detected at node {next_node}")
+            break
+        path.append(next_node)
+        visited.add(next_node)
+        current = next_node
+    
+    return path
+
+
+def plot_solution_on_osm(G, sample, solution_adj_list, coordinates, best_cost, instance_id, output_path):
     """
     Plot a PDTSP solution on the OSM road network.
     
     Args:
         G: OSMnx graph
         sample: Dataset sample containing path_lookup and node2osmid
-        solution_path: List of node indices representing the solution
+        solution_adj_list: Adjacency list representing the solution (adj_list[i] = next node after i)
         coordinates: Normalized coordinates [num_nodes, 2]
         best_cost: Best cost of the solution
         instance_id: Instance ID
         output_path: Path to save the figure
     """
+    # 将邻接表转换为实际的访问顺序
+    solution_path = adjacency_list_to_path(solution_adj_list)
+    print(f"  转换后的路径顺序: {solution_path}")
+    print(f"  路径长度: {len(solution_path)} 个节点")
+    
     fig, ax = plt.subplots(figsize=(12, 12))
     
     # Plot the base road network
@@ -69,7 +108,7 @@ def plot_solution_on_osm(G, sample, solution_path, coordinates, best_cost, insta
     # Plot the solution route
     xs = [G.nodes[n]['x'] for n in osmid_seq]
     ys = [G.nodes[n]['y'] for n in osmid_seq]
-    ax.plot(xs, ys, linewidth=3, alpha=0.8, color='red', label='Solution Route', zorder=3)
+    ax.plot(xs, ys, linewidth=3, alpha=0.8, color='red', label='Solution Route', zorder=2)
     
     # Plot depot (node 0) as a green star
     depot_osmid = sample['node2osmid'][0]
@@ -80,24 +119,31 @@ def plot_solution_on_osm(G, sample, solution_path, coordinates, best_cost, insta
     
     # Plot pickup/delivery nodes
     num_pairs = (len(solution_path) - 1) // 2
+    
+    # Create dummy plots for legend
+    ax.scatter([], [], s=150, c='white', marker='o', edgecolors='blue', 
+               linewidths=2, label='Pick up')
+    ax.scatter([], [], s=150, c='white', marker='s', edgecolors='orange', 
+               linewidths=2, label='Drop off')
+    
     for i in range(1, num_pairs + 1):
         # Pickup node
         pickup_osmid = sample['node2osmid'][i]
         pickup_x = G.nodes[pickup_osmid]['x']
         pickup_y = G.nodes[pickup_osmid]['y']
-        ax.scatter(pickup_x, pickup_y, s=150, c='blue', marker='o',
-                   edgecolors='black', linewidths=1.5, alpha=0.8, zorder=4)
-        ax.text(pickup_x, pickup_y, f'P{i}', fontsize=8, ha='center', va='center',
-                color='white', weight='bold', zorder=6)
+        ax.scatter(pickup_x, pickup_y, s=150, c='white', marker='o',
+                   edgecolors='blue', linewidths=2, alpha=1.0, zorder=4)
+        ax.text(pickup_x, pickup_y, f'{i}', fontsize=8, ha='center', va='center',
+                color='black', weight='bold', zorder=6)
         
         # Delivery node
         delivery_osmid = sample['node2osmid'][i + num_pairs]
         delivery_x = G.nodes[delivery_osmid]['x']
         delivery_y = G.nodes[delivery_osmid]['y']
-        ax.scatter(delivery_x, delivery_y, s=150, c='orange', marker='s',
-                   edgecolors='black', linewidths=1.5, alpha=0.8, zorder=4)
-        ax.text(delivery_x, delivery_y, f'D{i}', fontsize=8, ha='center', va='center',
-                color='white', weight='bold', zorder=6)
+        ax.scatter(delivery_x, delivery_y, s=150, c='white', marker='s',
+                   edgecolors='orange', linewidths=2, alpha=1.0, zorder=4)
+        ax.text(delivery_x, delivery_y, f'{i}', fontsize=8, ha='center', va='center',
+                color='black', weight='bold', zorder=6)
     
     # Add title and legend
     ax.set_title(f'Instance {instance_id} - Best Cost: {best_cost:.2f}\n'
@@ -141,7 +187,7 @@ def main(args):
     print(f"\nVisualizing Instance {instance_idx}:")
     print(f"  Best Cost: {instance['best_cost']}")
     print(f"  Path Length: {instance['path_length']}")
-    print(f"  Best Path: {instance['best_path']}")
+    print(f"  Best Path (邻接表形式): {instance['best_path']}")
     
     # Build OSM graph
     print(f"\nLoading OSM road network for: {args.osm_place}")
@@ -161,7 +207,7 @@ def main(args):
     plot_solution_on_osm(
         G=G,
         sample=sample,
-        solution_path=instance['best_path'],
+        solution_adj_list=instance['best_path'],
         coordinates=instance['coordinates'],
         best_cost=instance['best_cost'],
         instance_id=instance_idx,
