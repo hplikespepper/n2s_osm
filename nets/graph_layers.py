@@ -529,7 +529,7 @@ class MultiHeadDecoder(nn.Module):
             param.data.uniform_(-stdv, stdv)
         
         
-    def forward(self, problem, h_em, rec, x_in, top2, visited_order_map, pre_action, selection_sig, fixed_action = None, require_entropy = False):        
+    def forward(self, problem, h_em, rec, x_in, top2, visited_order_map, pre_action, selection_sig, fixed_action = None, require_entropy = False, vehicle_assignment = None):        
     
         bs, gs, dim = h_em.size()
         half_pos =  (gs - 1) // 2
@@ -571,7 +571,8 @@ class MultiHeadDecoder(nn.Module):
         ############# action2
         pos_pickup = (1 + action_removal).view(-1)
         pos_delivery = pos_pickup + half_pos
-        mask_table = problem.get_swap_mask(action_removal + 1, visited_order_map, top2).expand(bs, gs, gs).cpu()
+        # Pass vehicle_assignment to get_swap_mask for PDTSP_2V
+        mask_table = problem.get_swap_mask(action_removal + 1, visited_order_map, vehicle_assignment if hasattr(problem, 'NAME') and problem.NAME == 'pdtsp_2v' else top2).expand(bs, gs, gs).cpu()
         if TYPE_REINSERTION == 'N2S':
             action_reinsertion_table = torch.tanh(self.compater_reinsertion(h, pos_pickup, pos_delivery, rec, mask_table)) * self.range
         elif TYPE_REINSERTION == 'random':

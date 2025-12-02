@@ -10,6 +10,7 @@ from options import get_options
 from problems.problem_pdtsp import PDTSP
 from problems.problem_pdtspl import PDTSPL
 from problems.problem_pdtsp_osm import PDTSP_OSM
+from problems.problem_pdtsp_2v import PDTSP_2V
 from agent.ppo import PPO
 
 def load_agent(name):
@@ -23,7 +24,8 @@ def load_problem(name):
     problem = {
         'pdtsp': PDTSP,
         'pdtspl': PDTSPL,
-        'pdtsp_osm': PDTSP_OSM,  # 新增
+        'pdtsp_osm': PDTSP_OSM,
+        'pdtsp_2v': PDTSP_2V,  # 新增: 2车辆版本
     }.get(name, None)
     assert problem is not None, "Currently unsupported problem: {}!".format(name)
     return problem

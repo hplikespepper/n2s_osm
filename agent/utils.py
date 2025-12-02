@@ -19,6 +19,70 @@ def gather_tensor_and_concat(tensor):
     dist.all_gather(gather_t, tensor)
     return torch.cat(gather_t)
 
+def convert_adjacency_to_path(rec):
+    """
+    Convert N2S adjacency list (successor representation) to visit order path.
+    
+    Args:
+        rec: adjacency list where rec[i] = j means "visit node j after node i"
+             Can be a list, numpy array, or tensor
+    
+    Returns:
+        path: list of nodes in visit order [node1, node2, ..., nodeN]
+              (does not include depot at start/end)
+    """
+    if isinstance(rec, torch.Tensor):
+        rec = rec.cpu().numpy().tolist()
+    elif hasattr(rec, 'tolist'):
+        rec = rec.tolist()
+    
+    path = []
+    current = 0  # Start at depot
+    max_steps = len(rec) + 1
+    
+    for _ in range(max_steps):
+        next_node = rec[current]
+        if next_node == 0:  # Return to depot
+            break
+        path.append(next_node)
+        current = next_node
+    
+    return path
+
+def extract_vehicle_paths_pdtsp2v(rec, vehicle_assignment):
+    """
+    Extract separate vehicle paths from unified PDTSP_2V solution.
+    
+    Args:
+        rec: adjacency list (successor representation)
+        vehicle_assignment: tensor or list indicating which vehicle each node belongs to
+                           0=depot, 1=vehicle1, 2=vehicle2
+    
+    Returns:
+        v1_path: list of nodes for vehicle 1 [node1, node2, ...]
+        v2_path: list of nodes for vehicle 2 [node1, node2, ...]
+    """
+    if isinstance(vehicle_assignment, torch.Tensor):
+        vehicle_assignment = vehicle_assignment.cpu().numpy().tolist()
+    elif hasattr(vehicle_assignment, 'tolist'):
+        vehicle_assignment = vehicle_assignment.tolist()
+    
+    # Convert to visit order first
+    complete_path = convert_adjacency_to_path(rec)
+    
+    # Split by vehicle
+    v1_path = []
+    v2_path = []
+    
+    for node in complete_path:
+        vehicle = vehicle_assignment[node]
+        if vehicle == 1:
+            v1_path.append(node)
+        elif vehicle == 2:
+            v2_path.append(node)
+    
+    return v1_path, v2_path
+
 def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, _id = None):
             
     # Validate mode
@@ -187,12 +251,50 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
                 "path_length": len(solution),
                 "coordinates": coordinates
             }
-            results_data["instances"].append(instance_data)
             
-            print(f"\nInstance {i+1}:")
-            print(f"  Best Cost: {cost:.6f}")
-            print(f"  Best Path: {solution.cpu().numpy().tolist()}")
-            print(f"  Path Length: {len(solution)}")
+            # For PDTSP_2V: extract and save separate vehicle paths
+            if opts.problem == 'pdtsp_2v':
+                # Get vehicle assignment from problem
+                batch_item = val_dataset_orig[i]
+                batch_for_assignment = {
+                    'coordinates': batch_item['coordinates'].unsqueeze(0)
+                }
+                vehicle_assignment, _, _ = problem.split_by_y_coordinate(batch_for_assignment)
+                
+                # Extract vehicle paths
+                v1_path, v2_path = extract_vehicle_paths_pdtsp2v(
+                    solution.cpu().numpy().tolist(),
+                    vehicle_assignment[0]
+                )
+                
+                # Calculate separate costs
+                batch_for_cost = {
+                    'coordinates': batch_item['coordinates'].unsqueeze(0),
+                    'vehicle_assignment': vehicle_assignment
+                }
+                rec_for_cost = solution.unsqueeze(0)
+                v1_cost, v2_cost, _ = problem.get_costs_separate(batch_for_cost, rec_for_cost)
+                
+                instance_data["vehicle_1_path"] = v1_path
+                instance_data["vehicle_2_path"] = v2_path
+                instance_data["vehicle_1_cost"] = v1_cost[0].item()
+                instance_data["vehicle_2_cost"] = v2_cost[0].item()
+                instance_data["vehicle_assignment"] = vehicle_assignment[0].cpu().numpy().tolist()
+                
+                print(f"\nInstance {i+1}:")
+                print(f"  Best Cost: {cost:.6f}")
+                print(f"  Vehicle 1 Cost: {v1_cost[0].item():.6f}, Nodes: {len(v1_path)}")
+                print(f"  Vehicle 2 Cost: {v2_cost[0].item():.6f}, Nodes: {len(v2_path)}")
+                print(f"  Vehicle 1 Path: {v1_path}")
+                print(f"  Vehicle 2 Path: {v2_path}")
+            else:
+                # For other problems, keep adjacency format (visualization scripts handle conversion)
+                print(f"\nInstance {i+1}:")
+                print(f"  Best Cost: {cost:.6f}")
+                print(f"  Best Path: {solution.cpu().numpy().tolist()}")
+                print(f"  Path Length: {len(solution)}")
+            
+            results_data["instances"].append(instance_data)
         
         # Save results to JSON file
         results_file = os.path.join(results_dir, f"pdtsp_results_{timestamp}.json")

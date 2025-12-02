@@ -183,12 +183,15 @@ class PPO:
         for t in tqdm(range(self.opts.T_max), disable = self.opts.no_progress_bar or not show_bar, desc = 'rollout', bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}'):       
             
             # pass through model
+            # For PDTSP_2V, pass vehicle_assignment to actor
+            vehicle_assignment = batch.get('vehicle_assignment', None) if hasattr(problem, 'NAME') and problem.NAME == 'pdtsp_2v' else None
             exchange = self.actor(problem,
                                   batch_feature,
                                   solutions,
                                   exchange,
                                   action_record,
-                                  do_sample = do_sample)[0]
+                                  do_sample = do_sample,
+                                  vehicle_assignment = vehicle_assignment)[0]
             
             # new solution
             solutions, rewards, obj, action_record = problem.step(batch, solutions, exchange, obj, action_record)
@@ -456,12 +459,15 @@ def train_batch(
         for w in range(int(epoch // opts.warm_up)):
             
             # get model output	
+            # For PDTSP_2V, pass vehicle_assignment to actor
+            vehicle_assignment = batch.get('vehicle_assignment', None) if hasattr(problem, 'NAME') and problem.NAME == 'pdtsp_2v' else None
             exchange = agent.actor( problem,
                                     batch_feature,
                                     solution,
                                     exchange,
                                     action_record,
-                                    do_sample = True)[0]
+                                    do_sample = True,
+                                    vehicle_assignment = vehicle_assignment)[0]
              
             # state transient	
             solution, rewards, obj, action_record = problem.step(batch, solution, exchange, obj, action_record)
@@ -500,7 +506,8 @@ def train_batch(
             memory.action_record.append(action_record.copy())
             
             # get model output
-            
+            # For PDTSP_2V, pass vehicle_assignment to actor
+            vehicle_assignment = batch.get('vehicle_assignment', None) if hasattr(problem, 'NAME') and problem.NAME == 'pdtsp_2v' else None
             exchange, log_lh, _to_critic, entro_p  = agent.actor(problem,
                                                                  batch_feature,
                                                                  solution,
@@ -508,7 +515,8 @@ def train_batch(
                                                                  action_record,
                                                                  do_sample = True,
                                                                  require_entropy = True,# take same action
-                                                                 to_critic = True)
+                                                                 to_critic = True,
+                                                                 vehicle_assignment = vehicle_assignment)
             
             memory.actions.append(exchange)
             memory.logprobs.append(log_lh)
@@ -567,6 +575,8 @@ def train_batch(
                 
                 for tt in range(t_time):
                     # get new action_prob
+                    # For PDTSP_2V, pass vehicle_assignment to actor
+                    vehicle_assignment = batch.get('vehicle_assignment', None) if hasattr(problem, 'NAME') and problem.NAME == 'pdtsp_2v' else None
                     _, log_p, _to_critic, entro_p = agent.actor(problem,
                                                                 batch_feature,
                                                                 old_states[tt],
@@ -574,7 +584,8 @@ def train_batch(
                                                                 old_action_records[tt],
                                                                 fixed_action = old_actions[tt],
                                                                 require_entropy = True,# take same action
-                                                                to_critic = True)
+                                                                to_critic = True,
+                                                                vehicle_assignment = vehicle_assignment)
                     
                     logprobs.append(log_p)
                     entropy.append(entro_p.detach().cpu())
@@ -595,7 +606,9 @@ def train_batch(
             reward_reversed = memory.rewards[::-1]
 
             # estimate return
-            R = agent.critic(agent.actor(problem,batch_feature,solution,exchange,action_record,only_critic = True), obj.view(obj.size(0), -1)[:,-1].unsqueeze(-1))[0]
+            # For PDTSP_2V, pass vehicle_assignment to actor
+            vehicle_assignment = batch.get('vehicle_assignment', None) if hasattr(problem, 'NAME') and problem.NAME == 'pdtsp_2v' else None
+            R = agent.critic(agent.actor(problem,batch_feature,solution,exchange,action_record,only_critic = True, vehicle_assignment = vehicle_assignment), obj.view(obj.size(0), -1)[:,-1].unsqueeze(-1))[0]
             for r in range(len(reward_reversed)):
                 R = R * gamma + reward_reversed[r]
                 Reward.append(R)

@@ -8,7 +8,7 @@ def get_options(args=None):
     parser = argparse.ArgumentParser(description="Neural Neighborhood Search")
 
     # overall settings
-    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm'], help="The targeted problem to solve, default 'pdp'")
+    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm','pdtsp_2v'], help="The targeted problem to solve, default 'pdp'")
     parser.add_argument('--graph_size', type=int, default=20, help="T number of customers in the targeted problem (graph size)")
     parser.add_argument('--init_val_met', choices = ['greedy', 'random'], default = 'random', help='method to generate initial solutions for inference')
     parser.add_argument('--no_cuda', action='store_true', help='disable GPUs')
