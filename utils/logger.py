@@ -2,7 +2,8 @@ import torch
 import math
     
 def log_to_screen(time_used, init_value, best_value, reward, costs_history, search_history,
-                  batch_size, dataset_size, T):
+                  batch_size, dataset_size, T, init_distance=None, init_makespan=None,
+                  best_distance=None, best_makespan=None):
     # reward
     print('\n', '-'*60)
     print('Avg total reward:'.center(35), '{:<10f} +- {:<10f}'.format(
@@ -29,6 +30,16 @@ def log_to_screen(time_used, init_value, best_value, reward, costs_history, sear
                 torch.std(cost_) / math.sqrt(batch_size)))
     print(f'Avg final best cost:'.center(35), '{:<10f} +- {:<10f}'.format(
                 best_value.mean(), torch.std(best_value) / math.sqrt(batch_size)))
+    if init_distance is not None and init_makespan is not None:
+        print('Avg init distance cost:'.center(35), '{:<10f} +- {:<10f}'.format(
+                init_distance.mean(), torch.std(init_distance) / math.sqrt(batch_size)))
+        print('Avg init makespan cost:'.center(35), '{:<10f} +- {:<10f}'.format(
+                init_makespan.mean(), torch.std(init_makespan) / math.sqrt(batch_size)))
+    if best_distance is not None and best_makespan is not None:
+        print('Avg best distance cost:'.center(35), '{:<10f} +- {:<10f}'.format(
+                best_distance.mean(), torch.std(best_distance) / math.sqrt(batch_size)))
+        print('Avg best makespan cost:'.center(35), '{:<10f} +- {:<10f}'.format(
+                best_makespan.mean(), torch.std(best_makespan) / math.sqrt(batch_size)))
     
     # time
     print('-'*60)
@@ -37,19 +48,25 @@ def log_to_screen(time_used, init_value, best_value, reward, costs_history, sear
     print('-'*60, '\n')
     
 def log_to_tb_val(tb_logger, time_used, init_value, best_value, reward, costs_history, search_history,
-                  batch_size, val_size, dataset_size, T, epoch):
-        
-    tb_logger.log_value('validation/avg_time',  time_used.mean() / dataset_size, epoch)
-    tb_logger.log_value('validation/avg_total_reward', reward.sum(1).mean(), epoch)
-    tb_logger.log_value('validation/avg_step_reward', reward.mean(), epoch)
-    
-    
-    tb_logger.log_value(f'validation/avg_init_cost', init_value.mean(), epoch)
-    tb_logger.log_value(f'validation/avg_best_cost', best_value.mean(), epoch)
+                  batch_size, val_size, dataset_size, T, epoch, init_distance=None,
+                  init_makespan=None, best_distance=None, best_makespan=None):
 
-    for per in range(20,100,20):
-        cost_ = costs_history[:,round(T*per/100)]
-        tb_logger.log_value(f'validation/avg_.{per}_cost', cost_.mean(), epoch)
+        tb_logger.log_value('validation/avg_time',  time_used.mean() / dataset_size, epoch)
+        tb_logger.log_value('validation/avg_total_reward', reward.sum(1).mean(), epoch)
+        tb_logger.log_value('validation/avg_step_reward', reward.mean(), epoch)
+
+        tb_logger.log_value('validation/avg_init_cost', init_value.mean(), epoch)
+        tb_logger.log_value('validation/avg_best_cost', best_value.mean(), epoch)
+        if init_distance is not None and init_makespan is not None:
+                tb_logger.log_value('validation/avg_init_distance_cost', init_distance.mean(), epoch)
+                tb_logger.log_value('validation/avg_init_makespan_cost', init_makespan.mean(), epoch)
+        if best_distance is not None and best_makespan is not None:
+                tb_logger.log_value('validation/avg_best_distance_cost', best_distance.mean(), epoch)
+                tb_logger.log_value('validation/avg_best_makespan_cost', best_makespan.mean(), epoch)
+
+        for per in range(20,100,20):
+                cost_ = costs_history[:,round(T*per/100)]
+                tb_logger.log_value(f'validation/avg_.{per}_cost', cost_.mean(), epoch)
 
 def log_to_tb_train(tb_logger, agent, Reward, ratios, bl_val_detached, total_cost, grad_norms, reward, entropy, approx_kl_divergence,
                reinforce_loss, baseline_loss, log_likelihood, initial_cost, mini_step):

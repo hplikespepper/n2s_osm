@@ -41,6 +41,7 @@ class PPO:
         self.opts = opts
         
         # figure out the actor
+        seq_length = size + (opts.num_vehicles if problem_name == 'mvpdtsp' else 1)
         self.actor = Actor(
             problem_name = problem_name,
             embedding_dim = opts.embedding_dim,
@@ -49,7 +50,7 @@ class PPO:
             n_layers = opts.n_encode_layers,
             normalization = opts.normalization,
             v_range = opts.v_range,
-            seq_length = size + 1
+            seq_length = seq_length
         )
         
         if not opts.eval_only:
@@ -129,6 +130,9 @@ class PPO:
         batch = move_to(batch, self.opts.device) # batch_size, graph_size, 2     
         bs, gs, dim = batch['coordinates'].size()
         
+        # Save original coordinates before augmentation (for result saving)
+        original_coords = batch['coordinates'].clone()
+        
         # Expand coordinates for augmentation
         batch['coordinates'] = batch['coordinates'].unsqueeze(1).repeat(1,val_m,1,1)
         
@@ -165,8 +169,10 @@ class PPO:
             batch['dist'] = batch['dist'].view(-1, gs, gs)
             
         solutions = move_to(problem.get_initial_solutions(batch, val_m), self.opts.device).long()
+        initial_solutions = solutions.clone()
         
         obj = problem.get_costs(batch, solutions)
+        initial_obj = obj.clone()
         
         obj_history = [torch.cat((obj[:,None],obj[:,None]),-1)]
         reward = []
@@ -174,7 +180,7 @@ class PPO:
         batch_feature = problem.input_feature_encoding(batch)
 
         exchange = None
-        action_record = [torch.zeros((batch_feature.size(0), problem.size//2)) for i in range(problem.size//2)]
+        action_record = [torch.zeros((batch_feature.size(0), problem.size//2)) for i in range(problem.size)]
         
         # Track best solutions
         best_solutions = solutions.clone()
@@ -204,11 +210,22 @@ class PPO:
             reward.append(rewards)  
             obj_history.append(obj)
             
-        out = (obj[:,-1].reshape(bs, val_m).min(1)[0], # batch_size, 1
+        # Select best augmentation per instance for reporting
+        best_obj_per_aug = best_obj.view(bs, val_m)
+        best_obj_per_inst, best_idx = best_obj_per_aug.min(1)
+        gather_idx = (torch.arange(bs, device=best_idx.device) * val_m + best_idx).long()
+        best_solutions_per_inst = best_solutions[gather_idx]
+        initial_solutions_per_inst = initial_solutions[gather_idx]
+        initial_obj_per_inst = initial_obj.view(bs, val_m)[torch.arange(bs, device=best_idx.device), best_idx]
+
+        out = (best_obj_per_inst, # batch_size - best cost across all T_max steps and augmentations
                torch.stack(obj_history,1)[:,:,0].view(bs, val_m, -1).min(1)[0],  # batch_size, T
                torch.stack(obj_history,1)[:,:,-1].view(bs, val_m, -1).min(1)[0],  # batch_size, T
                torch.stack(reward,1).view(bs, val_m, -1).max(1)[0], # batch_size, T
-               best_solutions, # Add best solutions to output
+               best_solutions_per_inst, # best solutions per instance
+               initial_solutions_per_inst, # initial solutions per instance
+               initial_obj_per_inst, # initial cost per instance
+               original_coords, # original coordinates (not augmented) for result saving
                )
         
         return out
@@ -297,6 +314,8 @@ def train(rank, problem, agent, val_dataset, tb_logger):
             dist.barrier()
     
     # Start the actual training loop
+    best_checkpoints = []  # list of (score, path)
+    top_k = 10
     for epoch in range(opts.epoch_start, opts.epoch_end):
         
         agent.lr_scheduler.step(epoch)
@@ -361,7 +380,10 @@ def train(rank, problem, agent, val_dataset, tb_logger):
                     print(f"⚠️  Warning: Generating training data online (slow). Consider using --train_dataset for faster training.")
             collate_fn = osm_collate_fn
         else:
-            training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size)
+            if problem.NAME == 'mvpdtsp':
+                training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size, num_vehicles=opts.num_vehicles)
+            else:
+                training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size)
             collate_fn = pdp_collate_fn
         
         # Synchronize after dataset creation
@@ -400,18 +422,28 @@ def train(rank, problem, agent, val_dataset, tb_logger):
             step += 1
         pbar.close()
         
-        # save new model after one epoch  
-        if rank == 0 and not opts.distributed: 
-            if not opts.no_saving and (( opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs == 0) or \
-                        epoch == opts.epoch_end - 1): agent.save(epoch)
-        elif opts.distributed and rank == 1:
-            if not opts.no_saving and (( opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs == 0) or \
-                        epoch == opts.epoch_end - 1): agent.save(epoch)
-            
-        
-        # validate the new model   
-        if rank == 0 and not opts.distributed: validate(rank, problem, agent, val_dataset, tb_logger, _id = epoch)
-        if rank == 0 and opts.distributed: validate(rank, problem, agent, val_dataset, tb_logger, _id = epoch)
+        # validate the new model
+        val_score = None
+        if rank == 0 and not opts.distributed:
+            val_score = validate(rank, problem, agent, val_dataset, tb_logger, _id=epoch)
+        if rank == 0 and opts.distributed:
+            val_score = validate(rank, problem, agent, val_dataset, tb_logger, _id=epoch)
+
+        # save top-k models only (based on validation avg best cost)
+        if rank == 0 and not opts.no_saving and opts.checkpoint_epochs != 0:
+            if val_score is not None and (epoch % opts.checkpoint_epochs == 0 or epoch == opts.epoch_end - 1):
+                ckpt_path = os.path.join(opts.save_dir, f'epoch-{epoch}.pt')
+                if len(best_checkpoints) < top_k:
+                    agent.save(epoch)
+                    best_checkpoints.append((val_score, ckpt_path))
+                else:
+                    worst_idx = max(range(len(best_checkpoints)), key=lambda i: best_checkpoints[i][0])
+                    worst_score, worst_path = best_checkpoints[worst_idx]
+                    if val_score < worst_score:
+                        agent.save(epoch)
+                        if os.path.exists(worst_path):
+                            os.remove(worst_path)
+                        best_checkpoints[worst_idx] = (val_score, ckpt_path)
         
         # syn
         if opts.distributed: dist.barrier()

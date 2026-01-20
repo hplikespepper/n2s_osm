@@ -184,7 +184,7 @@ class PDTSP(object):
             visited_time[:, p_size // 2:],"deliverying without pick-up")
     
     
-    def get_swap_mask(self, selected_node, visited_order_map, top2=None):
+    def get_swap_mask(self, selected_node, visited_order_map, top2=None, rec=None):
         return self.get_real_mask(selected_node, visited_order_map)
         
     

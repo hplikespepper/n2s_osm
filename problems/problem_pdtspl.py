@@ -223,7 +223,7 @@ class PDTSPL(object):
         ).all(), (visited_time[:, 1: p_size // 2 + 1] < 
             visited_time[:, p_size + 1 // 2:],"deliverying without pick-up")
     
-    def get_swap_mask(self, selected_node, visited_order_map, top2):
+    def get_swap_mask(self, selected_node, visited_order_map, top2, rec=None):
         return self.get_real_mask(selected_node, visited_order_map, top2)
     
     def get_costs(self, batch, rec):

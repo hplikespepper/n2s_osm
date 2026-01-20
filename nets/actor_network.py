@@ -75,7 +75,8 @@ class Actor(nn.Module):
         # the embedded input x
         bs, gs, in_d = x_in.size()
 
-        h_embed, h_pos, visited_time, top2 = self.embedder(x_in, solution, self.clac_stacks)
+        num_depots = getattr(problem, 'num_vehicles', 1)
+        h_embed, h_pos, visited_time, top2 = self.embedder(x_in, solution, self.clac_stacks, num_depots=num_depots)
         
         # pass through encoder
         pos_em = self.pos_encoder(h_pos)

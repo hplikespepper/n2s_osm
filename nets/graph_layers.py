@@ -324,7 +324,7 @@ class CompatNeighbour(nn.Module):
             stdv = 1. / math.sqrt(param.size(-1))
             param.data.uniform_(-stdv, stdv)
 
-    def forward(self, h, rec, visited_order_map, selection_sig):
+    def forward(self, h, rec, visited_order_map, selection_sig, pickup_indices = None, delivery_indices = None):
         
         pre = rec.argsort()
         post = rec.gather(1, rec)
@@ -342,9 +342,17 @@ class CompatNeighbour(nn.Module):
         Q_pre = hidden_Q.gather(2, pre.view(1, batch_size, graph_size, 1).expand_as(hidden_Q))
         K_post = hidden_K.gather(2, post.view(1, batch_size, graph_size, 1).expand_as(hidden_Q))
     
-        compatibility = ((Q_pre * hidden_K).sum(-1) + (hidden_Q * K_post).sum(-1) - (Q_pre * K_post).sum(-1))[:,:,1:]
+        compatibility = (Q_pre * hidden_K).sum(-1) + (hidden_Q * K_post).sum(-1) - (Q_pre * K_post).sum(-1)
         
-        compatibility_pairing = torch.cat((compatibility[:,:,:graph_size // 2], compatibility[:,:,graph_size // 2:]), 0)
+        if pickup_indices is not None and delivery_indices is not None:
+            pickup_indices = pickup_indices.view(1, 1, -1).expand(self.n_heads, batch_size, -1)
+            delivery_indices = delivery_indices.view(1, 1, -1).expand(self.n_heads, batch_size, -1)
+            pickup_comp = compatibility.gather(2, pickup_indices)
+            delivery_comp = compatibility.gather(2, delivery_indices)
+            compatibility_pairing = torch.cat((pickup_comp, delivery_comp), 0)
+        else:
+            compatibility = compatibility[:, :, 1:]
+            compatibility_pairing = torch.cat((compatibility[:,:,:graph_size // 2], compatibility[:,:,graph_size // 2:]), 0)
 
         compatibility_pairing = self.agg(torch.cat((compatibility_pairing.permute(1,2,0), 
                                                     selection_sig.permute(0,2,1)),-1)).squeeze()
@@ -532,7 +540,15 @@ class MultiHeadDecoder(nn.Module):
     def forward(self, problem, h_em, rec, x_in, top2, visited_order_map, pre_action, selection_sig, fixed_action = None, require_entropy = False):        
     
         bs, gs, dim = h_em.size()
-        half_pos =  (gs - 1) // 2
+        if hasattr(problem, 'get_pickup_indices'):
+            pickup_indices = problem.get_pickup_indices(device=h_em.device)
+            delivery_indices = problem.get_delivery_indices(device=h_em.device)
+            num_pickups = pickup_indices.size(0)
+        else:
+            half_pos =  (gs - 1) // 2
+            pickup_indices = torch.arange(1, half_pos + 1, device=h_em.device)
+            delivery_indices = pickup_indices + half_pos
+            num_pickups = half_pos
         
         arange = torch.arange(bs)
     
@@ -540,22 +556,24 @@ class MultiHeadDecoder(nn.Module):
         
         ############# action1 removal
         if TYPE_REMOVAL == 'N2S':
-            action_removal_table = torch.tanh(self.compater_removal(h, rec, visited_order_map, selection_sig).squeeze()) * self.range
+            action_removal_table = torch.tanh(self.compater_removal(h, rec, visited_order_map, selection_sig, pickup_indices, delivery_indices).squeeze()) * self.range
             if pre_action is not None and pre_action[0,0] > 0:
                 action_removal_table[arange, pre_action[:,0]] = -1e20
             log_ll_removal = F.log_softmax(action_removal_table, dim = -1) if self.training and TYPE_REMOVAL == 'N2S' else None
             probs_removal = F.softmax(action_removal_table, dim = -1)
         elif TYPE_REMOVAL == 'random':
-            probs_removal = torch.rand(bs, gs//2).to(h_em.device)
+            probs_removal = torch.rand(bs, num_pickups).to(h_em.device)
         else:
             # epi-greedy
             first_row = torch.arange(gs, device = rec.device).long().unsqueeze(0).expand(bs, gs)
             d_i =  x_in.gather(1, first_row.unsqueeze(-1).expand(bs, gs, 2))
             d_i_next = x_in.gather(1, rec.long().unsqueeze(-1).expand(bs, gs, 2))
             d_i_pre = x_in.gather(1, rec.argsort().long().unsqueeze(-1).expand(bs, gs, 2))
-            cost_ = ((d_i_pre  - d_i).norm(p=2, dim=2) + (d_i  - d_i_next).norm(p=2, dim=2) - (d_i_pre  - d_i_next).norm(p=2, dim=2))[:,1:]
-            probs_removal = (cost_[:,:gs//2] + cost_[:,gs//2:])
-            probs_removal_random = torch.rand(bs, gs//2).to(h_em.device)
+            cost_ = ((d_i_pre  - d_i).norm(p=2, dim=2) + (d_i  - d_i_next).norm(p=2, dim=2) - (d_i_pre  - d_i_next).norm(p=2, dim=2))
+            pickup_cost = cost_.gather(1, pickup_indices.unsqueeze(0).expand(bs, num_pickups))
+            delivery_cost = cost_.gather(1, delivery_indices.unsqueeze(0).expand(bs, num_pickups))
+            probs_removal = (pickup_cost + delivery_cost)
+            probs_removal_random = torch.rand(bs, num_pickups).to(h_em.device)
             
         if fixed_action is not None:
             action_removal = fixed_action[:,:1]
@@ -569,9 +587,13 @@ class MultiHeadDecoder(nn.Module):
         selected_log_ll_action1 = log_ll_removal.gather(1, action_removal) if self.training and TYPE_REMOVAL == 'N2S' else torch.tensor(0).to(h.device)
         
         ############# action2
-        pos_pickup = (1 + action_removal).view(-1)
-        pos_delivery = pos_pickup + half_pos
-        mask_table = problem.get_swap_mask(action_removal + 1, visited_order_map, top2).expand(bs, gs, gs).cpu()
+        if hasattr(problem, 'map_action_to_pickup'):
+            pos_pickup = problem.map_action_to_pickup(action_removal).view(-1)
+            pos_delivery = problem.pickup_to_delivery(pos_pickup)
+        else:
+            pos_pickup = (1 + action_removal).view(-1)
+            pos_delivery = pos_pickup + half_pos
+        mask_table = problem.get_swap_mask(pos_pickup, visited_order_map, top2, rec).expand(bs, gs, gs).cpu()
         if TYPE_REINSERTION == 'N2S':
             action_reinsertion_table = torch.tanh(self.compater_reinsertion(h, pos_pickup, pos_delivery, rec, mask_table)) * self.range
         elif TYPE_REINSERTION == 'random':
@@ -579,8 +601,12 @@ class MultiHeadDecoder(nn.Module):
         else:
             
             # epi-greedy
-            pos_pickup = (1 + action_removal)
-            pos_delivery = pos_pickup + half_pos
+            if hasattr(problem, 'map_action_to_pickup'):
+                pos_pickup = problem.map_action_to_pickup(action_removal)
+                pos_delivery = problem.pickup_to_delivery(pos_pickup)
+            else:
+                pos_pickup = (1 + action_removal)
+                pos_delivery = pos_pickup + half_pos
             rec_new = rec.clone()
             argsort = rec_new.argsort()
             pre_pairfirst = argsort.gather(1, pos_pickup)
@@ -824,7 +850,7 @@ class EmbeddingNet(nn.Module):
         
         return pattern    
 
-    def position_encoding(self, solutions, embedding_dim, clac_stacks = False):
+    def position_encoding(self, solutions, embedding_dim, clac_stacks = False, num_depots = 1):
          batch_size, seq_length = solutions.size()
          half_size = seq_length // 2
          
@@ -836,33 +862,59 @@ class EmbeddingNet(nn.Module):
          
          pre = torch.zeros((batch_size),device = solutions.device).long()
          
-         arange = torch.arange(batch_size)
+         arange = torch.arange(batch_size, device = solutions.device)
          if clac_stacks: 
              stacks = torch.zeros(batch_size, half_size + 1, device = solutions.device) - 0.01 # fix bug: topk is not stable sorting
              top2 = torch.zeros(batch_size, seq_length, 2,device = solutions.device).long()
              stacks[arange, pre] = 0  # fix bug: topk is not stable sorting
          
-         for i in range(seq_length):
-             current_nodes = solutions[arange,pre]
-             visited_time[arange,current_nodes] = i+1
-             pre = solutions[arange,pre]
-             
-             if clac_stacks:
-                 index1 = (current_nodes <= half_size)& (current_nodes > 0)
-                 index2 = (current_nodes > half_size)& (current_nodes > 0)
-                 if index1.any():
-                     stacks[index1, current_nodes[index1]] = i + 1
-                 if (index2).any():
-                     stacks[index2, current_nodes[index2] - half_size] = -0.01  # fix bug: topk is not stable sorting
-                 top2[arange, current_nodes] = stacks.topk(2)[1]
-             
+         if (num_depots <= 1) or clac_stacks:
+             for i in range(seq_length):
+                 current_nodes = solutions[arange,pre]
+                 visited_time[arange,current_nodes] = i+1
+                 pre = solutions[arange,pre]
+                 
+                 if clac_stacks:
+                     index1 = (current_nodes <= half_size)& (current_nodes > 0)
+                     index2 = (current_nodes > half_size)& (current_nodes > 0)
+                     if index1.any():
+                         stacks[index1, current_nodes[index1]] = i + 1
+                     if (index2).any():
+                         stacks[index2, current_nodes[index2] - half_size] = -0.01  # fix bug: topk is not stable sorting
+                     top2[arange, current_nodes] = stacks.topk(2)[1]
+         else:
+             total_nodes = seq_length
+             vehicle_id = torch.full((batch_size, seq_length), -1, device=solutions.device, dtype=torch.long)
+             for v in range(num_depots):
+                 pre = torch.full((batch_size,), v, device=solutions.device, dtype=torch.long)
+                 order = torch.zeros((batch_size,), device=solutions.device, dtype=torch.long)
+                 active = torch.ones((batch_size,), device=solutions.device, dtype=torch.bool)
+                 for _ in range(seq_length):
+                     current_nodes = solutions[arange, pre]
+                     new = (vehicle_id[arange, current_nodes] < 0) & active
+                     order = torch.where(active, order + 1, order)
+                     visited_time[arange, current_nodes] = torch.where(
+                         new,
+                         v * total_nodes + order,
+                         visited_time[arange, current_nodes],
+                     )
+                     vehicle_id[arange, current_nodes] = torch.where(
+                         new,
+                         torch.full_like(vehicle_id[arange, current_nodes], v),
+                         vehicle_id[arange, current_nodes],
+                     )
+                     pre = current_nodes
+                     active = active & (current_nodes != v)
+                     if not active.any():
+                         break
+         
          index = (visited_time % seq_length).long().unsqueeze(-1).expand(batch_size, seq_length, embedding_dim)
          # return 
          return torch.gather(position_enc_new, 1, index), visited_time.long(), top2 if clac_stacks else None
 
         
-    def forward(self, x, solutions, clac_stacks = False):
-        pos_enc, visited_time, top2 = self.position_encoding(solutions, self.embedding_dim, clac_stacks)
+    def forward(self, x, solutions, clac_stacks = False, num_depots = 1):
+        pos_enc, visited_time, top2 = self.position_encoding(solutions, self.embedding_dim, clac_stacks, num_depots)
         x_embedding = self.embedder(x)   
         return  x_embedding, pos_enc, visited_time, top2
     

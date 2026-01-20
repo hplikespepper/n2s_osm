@@ -8,7 +8,7 @@ def get_options(args=None):
     parser = argparse.ArgumentParser(description="Neural Neighborhood Search")
 
     # overall settings
-    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm'], help="The targeted problem to solve, default 'pdp'")
+    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm','mvpdtsp'], help="The targeted problem to solve, default 'pdp'")
     parser.add_argument('--graph_size', type=int, default=20, help="T number of customers in the targeted problem (graph size)")
     parser.add_argument('--init_val_met', choices = ['greedy', 'random'], default = 'random', help='method to generate initial solutions for inference')
     parser.add_argument('--no_cuda', action='store_true', help='disable GPUs')
@@ -51,6 +51,8 @@ def get_options(args=None):
     parser.add_argument('--val_batch_size', type=int, default=1000, help='Number of instances per batch for validation/inference')
     parser.add_argument('--val_dataset', type=str, default = './datasets/pdp_20.pkl', help='dataset file path')
     parser.add_argument('--val_m', type=int, default=1, help='number of data augments in Algorithm 2')
+    parser.add_argument('--makespan', action='store_true', help='add makespan to objective for mvpdtsp')
+    parser.add_argument('--print_solution', action='store_true', help='print initial and final solutions during evaluation')
     
 
     # resume and load models
@@ -71,6 +73,7 @@ def get_options(args=None):
     parser.add_argument('--osm_place', type=str, default='Boca Raton, Florida, USA', help='OSM place string for pdtsp_osm')
     parser.add_argument('--capacity', type=int, default=3, help='Vehicle capacity for PDP on real map')
     parser.add_argument('--train_dataset', type=str, default=None, help='Pre-generated training dataset file path (for pdtsp_osm only)')
+    parser.add_argument('--num_vehicles', type=int, default=2, help='number of vehicles for multi-vehicle PDTSP')
 
     opts = parser.parse_args(args)
     
@@ -78,7 +81,12 @@ def get_options(args=None):
     opts.world_size = torch.cuda.device_count()
     opts.distributed = (opts.world_size > 1) and (not opts.no_DDP)
     os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '4869'
+    # Allow external override via env, else auto-pick a free port
+    if os.environ.get('MASTER_PORT') is None:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            os.environ['MASTER_PORT'] = str(s.getsockname()[1])
     assert opts.val_m <= opts.graph_size // 2
     opts.use_cuda = torch.cuda.is_available() and not opts.no_cuda
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S")) \
