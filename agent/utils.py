@@ -73,6 +73,7 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
     if distributed and opts.distributed:
         assert opts.val_batch_size % opts.world_size == 0
         train_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
+        local_indices = list(train_sampler)  # dataset indices this rank will process
         val_dataloader = DataLoader(val_dataset, batch_size = opts.val_batch_size // opts.world_size, shuffle=False,
                                     num_workers=0,
                                     pin_memory=True,
@@ -93,12 +94,17 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
     initial_solutions = []
     initial_costs = []
     original_coords = []  # Store original coordinates (not augmented)
+    solve_times = []  # Per-instance solve time
     for batch in tqdm(val_dataloader, desc = 'inference', bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}'):
+        batch_start = time.time()
         bv_, cost_hist_, best_hist_, r_, solutions_, init_solutions_, init_costs_, coords_ = agent.rollout(problem,
                                                         opts.val_m,
                                                         batch,
                                                         do_sample = True,
                                                         show_bar = rank==0)
+        batch_elapsed = time.time() - batch_start
+        batch_size_actual = bv_.size(0)
+        solve_times.extend([batch_elapsed / batch_size_actual] * batch_size_actual)
         bv.append(bv_)
         cost_hist.append(cost_hist_)
         best_hist.append(best_hist_)
@@ -133,6 +139,25 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
         best_solutions = gather_tensor_and_concat(best_solutions.contiguous())
         initial_costs = gather_tensor_and_concat(initial_costs.contiguous())
         original_coords = gather_tensor_and_concat(original_coords.contiguous())
+        world_size = dist.get_world_size()
+        solve_times = (gather_tensor_and_concat(torch.tensor(solve_times, dtype=torch.float32).cuda()) / world_size).cpu().tolist()
+        # Reorder all gathered results back to original dataset index order.
+        # DistributedSampler(shuffle=False) with world_size W distributes indices as:
+        #   rank 0: [0, W, 2W, ...]  rank 1: [1, W+1, 2W+1, ...]  etc.
+        # After gather the order is [rank0_data, rank1_data, ...] i.e. [0, W, 2W, ..., 1, W+1, ...]
+        # We must sort by original index to align with OR-Tools/MC sequential ordering.
+        all_indices = gather_tensor_and_concat(torch.tensor(local_indices, dtype=torch.long).cuda())
+        sort_order = torch.argsort(all_indices)
+        initial_cost = initial_cost[sort_order]
+        bv = bv[sort_order]
+        costs_history = costs_history[sort_order]
+        search_history = search_history[sort_order]
+        reward = reward[sort_order]
+        initial_solutions = initial_solutions[sort_order]
+        best_solutions = best_solutions[sort_order]
+        initial_costs = initial_costs[sort_order]
+        original_coords = original_coords[sort_order]
+        solve_times = [solve_times[i] for i in sort_order.tolist()]
     
     else:
         initial_cost = cost_hist[:,0] # bs
@@ -221,9 +246,11 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
             "val_size": opts.val_size,
             "instances": []
         }
+        if problem.NAME == 'mvpdtsp':
+            results_data["num_vehicles"] = opts.num_vehicles
 
-        # Use the same evaluation dataset order for saving
-        coords_list = [val_dataset[i]['coordinates'] for i in range(len(val_dataset))]
+        # Use the same evaluation order as rollout for saving (align with best_solutions)
+        coords_list = original_coords.detach().cpu().numpy().tolist()
 
         # Use already computed cost components (avoid redundant calculation)
         dist_costs = best_distance
@@ -263,6 +290,8 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
 
         for i in range(min(opts.val_size, len(best_solutions))):
             solution = best_solutions[i]
+            best_distance_cost = dist_costs[i].item() if dist_costs is not None else None
+            best_makespan_cost = makespan_costs[i].item() if makespan_costs is not None else None
             cost = bv[i].item()
             init_solution = initial_solutions[i]
             init_cost = initial_costs[i].item()
@@ -270,13 +299,22 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
 
             if problem.NAME == 'mvpdtsp':
                 vehicle_routes = decode_vehicle_routes(solution, opts.num_vehicles)
+                rec_tensor = solution.detach().cpu().long().unsqueeze(0)
+                coords_tensor = torch.as_tensor(coordinates).float().unsqueeze(0)
+                batch_cost = {"coordinates": coords_tensor}
+                inst_distance, inst_makespan = problem.compute_cost_components(batch_cost, rec_tensor)
+                inst_vehicle_costs = problem._get_route_lengths(batch_cost, rec_tensor)
+                inst_distance_val = inst_distance.item()
+                inst_makespan_val = inst_makespan.item()
+                inst_vehicle_costs_list = inst_vehicle_costs[0].cpu().tolist()
                 instance_data = {
                     "instance_id": i,
                     "best_cost": cost,
-                    "best_distance_cost": dist_costs[i].item() if dist_costs is not None else None,
-                    "best_makespan_cost": makespan_costs[i].item() if makespan_costs is not None else None,
-                    "best_vehicle_distance_costs": best_vehicle_costs[i].cpu().tolist() if best_vehicle_costs is not None else None,
-                    "best_vehicle_completion_times": best_vehicle_costs[i].cpu().tolist() if best_vehicle_costs is not None else None,
+                    "best_distance_cost": inst_distance_val,
+                    "best_makespan_cost": inst_makespan_val,
+                    "best_vehicle_distance_costs": inst_vehicle_costs_list,
+                    "best_vehicle_completion_times": inst_vehicle_costs_list,
+                    "best_rec": solution.cpu().numpy().tolist(),
                     "vehicle_routes": vehicle_routes,
                     "route_lengths": [len(r) for r in vehicle_routes],
                     "total_nodes": len(solution),
@@ -285,10 +323,12 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
                 if print_solution:
                     init_vehicle_routes = decode_vehicle_routes(init_solution, opts.num_vehicles)
                     instance_data["initial_cost"] = init_cost
-                    instance_data["initial_vehicle_routes"] = init_vehicle_routes
+                    instance_data["initial_rec"] = init_solution.cpu().numpy().tolist()
                     if init_dist_costs is not None and init_makespan_costs is not None:
                         instance_data["initial_distance_cost"] = init_dist_costs[i].item()
                         instance_data["initial_makespan_cost"] = init_makespan_costs[i].item()
+                if i < len(solve_times):
+                    instance_data["solve_time"] = solve_times[i]
             else:
                 instance_data = {
                     "instance_id": i,
@@ -300,6 +340,8 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
                 if print_solution:
                     instance_data["initial_cost"] = init_cost
                     instance_data["initial_path"] = init_solution.cpu().numpy().tolist()
+                if i < len(solve_times):
+                    instance_data["solve_time"] = solve_times[i]
 
             results_data["instances"].append(instance_data)
 
@@ -308,9 +350,8 @@ def validate(rank, problem, agent, val_dataset, tb_logger, distributed = False, 
                 print(f"  Initial Cost: {init_cost:.6f}")
                 print(f"  Best Cost: {cost:.6f}")
                 if problem.NAME == 'mvpdtsp':
-                    print(f"  Initial Vehicle Routes: {init_vehicle_routes}")
-                    print(f"  Final Vehicle Routes: {vehicle_routes}")
-                    print(f"  Route Lengths: {[len(r) for r in vehicle_routes]}")
+                    print(f"  Initial Rec: {init_solution.cpu().numpy().tolist()}")
+                    print(f"  Final Rec: {solution.cpu().numpy().tolist()}")
                 else:
                     print(f"  Initial Path: {init_solution.cpu().numpy().tolist()}")
                     print(f"  Final Path: {solution.cpu().numpy().tolist()}")

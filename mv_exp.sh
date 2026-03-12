@@ -22,7 +22,7 @@ CUDA_VISIBLE_DEVICES=0,1 python run.py \
 	--num_vehicles 2 \
 	--warm_up 2 \
 	--max_grad_norm 0.05 \
-	--run_name 'mvpdtsp20_makespan' \
+	--run_name 'mvpdtsp20_makespan_log' \
 	--makespan
 
 END_TIME=$(date +%s)

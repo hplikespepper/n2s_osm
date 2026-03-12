@@ -68,7 +68,55 @@ python run.py --problem mvpdtsp --graph_size 20 --num_vehicles 2 \
 - 快速训练命令（基于你给的命令，启用 makespan）：
 	python run.py --problem mvpdtsp --graph_size 20 --num_vehicles 2 --batch_size 64 --epoch_size 256 --epoch_end 1 --T_train 5 --T_max 10 --run_name 'temp_tsp20' --makespan
 - 快速评估命令（启用 makespan 目标；按需加模型路径）：
-	python run.py --eval_only --problem mvpdtsp --graph_size 20 --num_vehicles 2 --val_size 256 --val_batch_size 256 --T_max 10 --run_name 'temp_tsp20_eval' --load_path outputs/mvpdtsp_20/temp_tsp20_*/epoch-0.pt --makespan
+	python run.py --eval_only --problem mvpdtsp --graph_size 20 --num_vehicles 2 --val_size 256 --val_batch_size 256 --T_max 10 --run_name 'mv20_eval_epoch198' --load_path outputs/mvpdtsp_20/mvpdtsp20_makespan_20260119T182324/epoch-198.pt --makespan
+- 完整评估：
+	python run.py --eval_only --problem mvpdtsp --graph_size 20 --num_vehicles 2 --val_size 256 --val_batch_size 256 --T_max 3000 --run_name 'mv20_eval_epoch198' --load_path outputs/mvpdtsp_20/mvpdtsp20_makespan_log_20260130T200924/epoch-198.pt --makespan
+	**一定要调大T_max到3000**
 
 可视化：
-python vis_mvpdtsp.py --results_file ./results/mvpdtsp_results_epoch10.json --instance_id 1 --save_path epoch10_index1.png
+1. 使用best_rec(邻接表示)
+	python vis_mvpdtsp_rec.py --instance_id 0 --results_file ./results/mvpdtsp_results_mv_198.json --save_path visualizations/mv_198.png
+or
+2. 使用解码的顺序表示
+	python vis_mvpdtsp.py --instance_id 1 --results_file ./results/mvpdtsp_results_mv_198.json --save_path visualizations/mv_198.png
+
+02/02/2026
+# 更新了训练代码，新增记录训练日志，以及增加tensorboard日志的指标
+# 创建了analysis_figure.py用于绘制训练中各指标的变化
+python analysis_figure.py --result_file ./outputs/mvpdtsp_20/mvpdtsp20_makespan_log_20260130T200924/mvpdtsp_epoch_metrics.jsonl --save_figure ./figure
+
+
+02/08/2026
+# 对比试验使用ortools:
+	- (存在一个问题 ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts. tensorboard 2.11.0 requires protobuf<4,>=3.9.2, but you have protobuf 5.29.6 which is incompatible. 安装ortools会导致tensorboard无法使用，理由是protobuf冲突)
+	
+	多车：
+	python ortools_baseline.py --val_size 256 --time_limit 15
+	单车： ortools_pdtsp.py
+
+	# 可视化代码同n2s一样
+
+# 查看结果统计：
+	python stat_best_cost.py --json_path ./results/mvpdtsp_results_epoch_198.json
+
+
+03/05/2026
+# 创建蒙特卡洛基准：
+	# 快速测试（5个实例，1000次采样）
+	python MonteCarlo_mvpdp.py --val_size 5 --num_mc_samples 1000
+
+	# 完整运行（1000个实例，10000次采样）
+	python MonteCarlo_mvpdp.py --val_size 1000 --num_mc_samples 10000
+
+	# 自定义输出路径
+	python MonteCarlo_mvpdp.py --output results/mc_result.json
+
+	# 贪心+随机扰动模式
+	python MonteCarlo_mvpdp.py --greedy --val_size 1000 --num_mc_samples 10000
+
+	# 调整扰动比例（0=纯贪心，1=接近纯随机，默认0.3）
+	python MonteCarlo_mvpdp.py --greedy --perturb_ratio 0.2
+
+03/09/2026
+# 新增对蒙特卡洛结果的统计分析脚本（特别的，包含solve time，其他的结果中似乎没有这项）
+python analysis_json.py results/mvpdtsp_results_mc_20260309_150953.json

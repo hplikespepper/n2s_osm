@@ -1,4 +1,5 @@
 import os
+import json
 from tqdm import tqdm
 import warnings
 import torch
@@ -313,6 +314,12 @@ def train(rank, problem, agent, val_dataset, tb_logger):
         if opts.distributed:
             dist.barrier()
     
+    # Setup MVPDTSP epoch metrics logging
+    mvp_metrics_path = None
+    record_mvp_metrics = (problem.NAME == 'mvpdtsp')
+    if record_mvp_metrics and rank == 0 and not opts.no_saving:
+        mvp_metrics_path = os.path.join(opts.save_dir, 'mvpdtsp_epoch_metrics.jsonl')
+
     # Start the actual training loop
     best_checkpoints = []  # list of (score, path)
     top_k = 10
@@ -408,19 +415,64 @@ def train(rank, problem, agent, val_dataset, tb_logger):
         pbar = tqdm(total = (opts.K_epochs) * (opts.epoch_size // opts.batch_size) * (opts.T_train // opts.n_step) ,
                     disable = opts.no_progress_bar or rank!=0, desc = 'training',
                     bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}')
+        epoch_metrics = None
+        if record_mvp_metrics:
+            epoch_metrics = {
+                'init_distance': [],
+                'init_makespan': [],
+                'final_distance': [],
+                'final_makespan': [],
+                'final_total_cost': [],
+                'final_objective_cost': [],
+                'total_reward': [],
+            }
+
         for batch_id, batch in enumerate(training_dataloader):
-            train_batch(rank,
-                        problem,
-                        agent,
-                        epoch,
-                        step,
-                        batch,
-                        tb_logger,
-                        opts,
-                        pbar,
-                        )
+            batch_metrics = train_batch(rank,
+                                        problem,
+                                        agent,
+                                        epoch,
+                                        step,
+                                        batch,
+                                        tb_logger,
+                                        opts,
+                                        pbar,
+                                        record_metrics=record_mvp_metrics,
+                                        )
+            if epoch_metrics is not None and batch_metrics is not None:
+                for key in epoch_metrics:
+                    epoch_metrics[key].append(batch_metrics[key])
             step += 1
         pbar.close()
+
+        if record_mvp_metrics and rank == 0 and epoch_metrics is not None:
+            def _mean_or_zero(values):
+                return float(np.mean(values)) if len(values) > 0 else 0.0
+
+            epoch_summary = {
+                'epoch': int(epoch),
+                'num_batches': int(len(epoch_metrics['total_reward'])),
+                'avg_init_distance': _mean_or_zero(epoch_metrics['init_distance']),
+                'avg_init_makespan': _mean_or_zero(epoch_metrics['init_makespan']),
+                'avg_final_distance': _mean_or_zero(epoch_metrics['final_distance']),
+                'avg_final_makespan': _mean_or_zero(epoch_metrics['final_makespan']),
+                'avg_final_total_cost': _mean_or_zero(epoch_metrics['final_total_cost']),
+                'avg_final_objective_cost': _mean_or_zero(epoch_metrics['final_objective_cost']),
+                'avg_total_reward': _mean_or_zero(epoch_metrics['total_reward']),
+            }
+
+            if not opts.no_tb and tb_logger is not None:
+                tb_logger.log_value('train_epoch/avg_init_distance', epoch_summary['avg_init_distance'], epoch)
+                tb_logger.log_value('train_epoch/avg_init_makespan', epoch_summary['avg_init_makespan'], epoch)
+                tb_logger.log_value('train_epoch/avg_final_distance', epoch_summary['avg_final_distance'], epoch)
+                tb_logger.log_value('train_epoch/avg_final_makespan', epoch_summary['avg_final_makespan'], epoch)
+                tb_logger.log_value('train_epoch/avg_final_total_cost', epoch_summary['avg_final_total_cost'], epoch)
+                tb_logger.log_value('train_epoch/avg_final_objective_cost', epoch_summary['avg_final_objective_cost'], epoch)
+                tb_logger.log_value('train_epoch/avg_total_reward', epoch_summary['avg_total_reward'], epoch)
+
+            if not opts.no_saving and mvp_metrics_path is not None:
+                with open(mvp_metrics_path, 'a') as f:
+                    f.write(json.dumps(epoch_summary) + '\n')
         
         # validate the new model
         val_score = None
@@ -459,6 +511,7 @@ def train_batch(
         tb_logger,
         opts,
         pbar,
+    record_metrics=False,
         ):
 
     # setup
@@ -480,6 +533,11 @@ def train_batch(
     solution = move_to_cuda(problem.get_initial_solutions(batch),rank) if opts.distributed \
                         else move_to(problem.get_initial_solutions(batch), opts.device)
     obj = problem.get_costs(batch, solution)
+
+    initial_solution = None
+    total_reward_acc = None
+    if record_metrics:
+        total_reward_acc = torch.zeros(batch_size, device=solution.device)
     
     # warm_up	
     if opts.warm_up:
@@ -501,6 +559,9 @@ def train_batch(
         obj = problem.get_costs(batch, solution)
         
         agent.train()
+
+    if record_metrics:
+        initial_solution = solution.detach().clone()
     
     # params for training
     gamma = opts.gamma
@@ -557,6 +618,8 @@ def train_batch(
             # state transient
             solution, rewards, obj, action_record = problem.step(batch, solution, exchange, obj, action_record)
             memory.rewards.append(rewards)
+            if record_metrics:
+                total_reward_acc = total_reward_acc + rewards
             # memory.mask_true = memory.mask_true + info['swaped']
             
             # store info
@@ -685,6 +748,24 @@ def train_batch(
         
         # end update
         memory.clear_memory()
+
+    if record_metrics:
+        with torch.no_grad():
+            init_distance, init_makespan = problem.compute_cost_components(batch, initial_solution)
+            final_distance, final_makespan = problem.compute_cost_components(batch, solution)
+            final_objective = problem.get_costs(batch, solution)
+
+        return {
+            'init_distance': init_distance.mean().item(),
+            'init_makespan': init_makespan.mean().item(),
+            'final_distance': final_distance.mean().item(),
+            'final_makespan': final_makespan.mean().item(),
+            'final_total_cost': (final_distance + final_makespan).mean().item(),
+            'final_objective_cost': final_objective.mean().item(),
+            'total_reward': total_reward_acc.mean().item(),
+        }
+
+    return None
 
     
         
