@@ -1,0 +1,7 @@
+# Existing project dependencies are reused; these also cover standalone rendering.
+osmnx>=1.9,<3
+contextily>=1.5,<2
+matplotlib>=3.7
+numpy>=1.24
+networkx>=2.8
+pyproj>=3.5

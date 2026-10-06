@@ -92,6 +92,7 @@ python analysis_figure.py --result_file ./outputs/mvpdtsp_20/mvpdtsp20_makespan_
 	
 	多车：
 	python ortools_baseline.py --val_size 256 --time_limit 15
+	python ortools_baseline.py --val_size 256 --time_limit 30 --val_dataset ./datasets/pdp_50.pkl --graph_size 50
 	单车： ortools_pdtsp.py
 
 	# 可视化代码同n2s一样

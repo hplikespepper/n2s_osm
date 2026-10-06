@@ -4,6 +4,8 @@ Generate OSM validation dataset for testing.
 """
 import pickle
 import torch
+import osmnx as ox
+from pathlib import Path
 from data.osm_pdp_dataset import OSMOnlinePDPSDataset
 
 def create_val_dataset(graph_size=20, num_samples=10, place="Boca Raton, Florida, USA", output_file='./datasets/osm_val.pkl'):
@@ -50,8 +52,11 @@ def create_val_dataset(graph_size=20, num_samples=10, place="Boca Raton, Florida
     os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
     with open(output_file, 'wb') as f:
         pickle.dump(data, f)
+    graph_file = Path(output_file).with_suffix('.graphml')
+    ox.save_graphml(dataset.G, filepath=graph_file)
     
     print(f"✓ Validation dataset saved to {output_file}")
+    print(f"✓ Dataset road network saved to {graph_file}")
     print(f"  Total samples: {len(data)}")
     print(f"  Coordinates shape: {data[0]['coordinates'].shape}")
     print(f"  Distance matrix shape: {data[0]['dist'].shape}")
