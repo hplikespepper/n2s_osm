@@ -8,7 +8,7 @@ def get_options(args=None):
     parser = argparse.ArgumentParser(description="Neural Neighborhood Search")
 
     # overall settings
-    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm','mvpdtsp'], help="The targeted problem to solve, default 'pdp'")
+    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm','mvpdtsp','mvpdtsp_fixed'], help="The targeted problem to solve, default 'pdp'")
     parser.add_argument('--graph_size', type=int, default=20, help="T number of customers in the targeted problem (graph size)")
     parser.add_argument('--init_val_met', choices = ['greedy', 'random'], default = 'random', help='method to generate initial solutions for inference')
     parser.add_argument('--no_cuda', action='store_true', help='disable GPUs')
@@ -51,7 +51,19 @@ def get_options(args=None):
     parser.add_argument('--val_batch_size', type=int, default=1000, help='Number of instances per batch for validation/inference')
     parser.add_argument('--val_dataset', type=str, default = './datasets/pdp_20.pkl', help='dataset file path')
     parser.add_argument('--val_m', type=int, default=1, help='number of data augments in Algorithm 2')
-    parser.add_argument('--makespan', action='store_true', help='add makespan to objective for mvpdtsp')
+    parser.add_argument(
+        '--objective',
+        choices=['distance', 'only_makespan', 'proposed'],
+        default=None,
+        help='MVPDTSP objective: D, M, or D + (K - 1)M',
+    )
+    parser.add_argument(
+        '--makespan',
+        action='store_true',
+        help='deprecated alias for --objective proposed',
+    )
+    parser.add_argument('--record_component_history', action='store_true', help='save best-so-far D/M/objective at regular inference steps')
+    parser.add_argument('--history_interval', type=int, default=100, help='step interval for component history recording')
     parser.add_argument('--print_solution', action='store_true', help='print initial and final solutions during evaluation')
     
 
@@ -64,9 +76,11 @@ def get_options(args=None):
     parser.add_argument('--no_progress_bar', action='store_true', help='disable progress bar')
     parser.add_argument('--log_dir', default='logs', help='directory to write TensorBoard information to')
     parser.add_argument('--log_step', type=int, default=50, help='log info every log_step gradient steps')
+    parser.add_argument('--results_dir', default='results', help='directory for evaluation JSON and terminal statistics')
     parser.add_argument('--output_dir', default='outputs', help='directory to write output models to')
     parser.add_argument('--run_name', default='run_name', help='name to identify the run')
     parser.add_argument('--checkpoint_epochs', type=int, default=1, help='save checkpoint every n epochs (default 1), 0 to save no checkpoints')
+    parser.add_argument('--dist_timeout', type=int, default=7200, help='Distributed process group timeout in seconds')
     
 
     # newly added parameters for OSM
@@ -76,17 +90,40 @@ def get_options(args=None):
     parser.add_argument('--num_vehicles', type=int, default=2, help='number of vehicles for multi-vehicle PDTSP')
 
     opts = parser.parse_args(args)
+
+    if opts.makespan:
+        if opts.objective is not None and opts.objective != 'proposed':
+            parser.error('--makespan is an alias for --objective proposed and cannot be combined with another objective')
+        opts.objective = 'proposed'
+    elif opts.objective is None:
+        opts.objective = 'distance'
     
     ### figure out whether to use distributed training
     opts.world_size = torch.cuda.device_count()
     opts.distributed = (opts.world_size > 1) and (not opts.no_DDP)
     os.environ['MASTER_ADDR'] = '127.0.0.1'
+    # NVLS initialization is unstable on this machine for multi-GPU NCCL startup.
+    # Disable it unless the user explicitly overrides the setting.
+    os.environ.setdefault('NCCL_NVLS_ENABLE', '0')
     # Allow external override via env, else auto-pick a free port
     if os.environ.get('MASTER_PORT') is None:
         import socket
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('', 0))
             os.environ['MASTER_PORT'] = str(s.getsockname()[1])
+    assert opts.batch_size > 0, "batch_size must be positive"
+    assert opts.val_batch_size > 0, "val_batch_size must be positive"
+    assert opts.epoch_size > 0, "epoch_size must be positive"
+    assert opts.graph_size > 0, "graph_size must be positive"
+    if opts.problem in ('mvpdtsp', 'mvpdtsp_fixed'):
+        assert opts.graph_size % 2 == 0, "For mvpdtsp, graph_size must be even (pickup+delivery nodes)."
+        assert opts.num_vehicles >= 1, "num_vehicles must be at least 1."
+    assert opts.history_interval > 0, "history_interval must be positive"
+    if opts.distributed:
+        assert opts.batch_size % opts.world_size == 0, \
+            f"batch_size ({opts.batch_size}) must be divisible by world_size ({opts.world_size}) for DDP."
+        assert opts.val_batch_size % opts.world_size == 0, \
+            f"val_batch_size ({opts.val_batch_size}) must be divisible by world_size ({opts.world_size}) for DDP."
     assert opts.val_m <= opts.graph_size // 2
     opts.use_cuda = torch.cuda.is_available() and not opts.no_cuda
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S")) \

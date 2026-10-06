@@ -1,5 +1,8 @@
 import os
 import json
+import time
+from datetime import datetime
+from datetime import timedelta
 from tqdm import tqdm
 import warnings
 import torch
@@ -17,6 +20,72 @@ from utils import torch_load_cpu, get_inner_model, move_to, move_to_cuda
 from utils.logger import log_to_tb_train
 from agent.utils import validate
 from data.collate import osm_collate_fn, pdp_collate_fn
+
+
+def _format_elapsed_time(elapsed_seconds):
+    elapsed_seconds = max(0, int(round(elapsed_seconds)))
+    hours, remainder = divmod(elapsed_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _write_training_time_record(opts, start_ts, end_ts=None, status='running', completed_epochs=0):
+    if opts.no_saving or opts.save_dir is None:
+        return
+
+    effective_end_ts = start_ts if end_ts is None else end_ts
+    record = {
+        'run_name': opts.run_name,
+        'problem': opts.problem,
+        'graph_size': int(opts.graph_size),
+        'num_vehicles': int(getattr(opts, 'num_vehicles', 1)),
+        'epoch_start': int(opts.epoch_start),
+        'epoch_end': int(opts.epoch_end),
+        'planned_epochs': int(opts.epoch_end - opts.epoch_start),
+        'completed_epochs': int(completed_epochs),
+        'status': status,
+        'start_time': datetime.fromtimestamp(start_ts).isoformat(timespec='seconds'),
+        'end_time': None if end_ts is None else datetime.fromtimestamp(end_ts).isoformat(timespec='seconds'),
+        'elapsed_seconds': float(max(0.0, effective_end_ts - start_ts)),
+        'elapsed_hms': _format_elapsed_time(effective_end_ts - start_ts),
+    }
+
+    with open(os.path.join(opts.save_dir, 'training_time.json'), 'w') as f:
+        json.dump(record, f, indent=2)
+
+
+def _validation_sync_dir(opts):
+    if opts.save_dir is not None:
+        return os.path.join(opts.save_dir, ".dist_sync")
+    return os.path.join(opts.output_dir, ".dist_sync", opts.run_name)
+
+
+def _validation_shard_path(opts, epoch, rank):
+    return os.path.join(_validation_sync_dir(opts), f"validation_epoch_{epoch}_rank_{rank}.pt")
+
+
+def _validation_done_path(opts, epoch):
+    return os.path.join(_validation_sync_dir(opts), f"validation_epoch_{epoch}.done")
+
+
+def _wait_for_file(path, poll_seconds=5.0):
+    while not os.path.exists(path):
+        time.sleep(poll_seconds)
+
+
+def _cleanup_validation_sync_files(paths):
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError as exc:
+            print(f"Warning: failed to remove temporary validation sync file {path}: {exc}", flush=True)
+    sync_dirs = {os.path.dirname(path) for path in paths}
+    for sync_dir in sync_dirs:
+        try:
+            os.rmdir(sync_dir)
+        except OSError:
+            pass
 
 class Memory:
     def __init__(self):
@@ -187,6 +256,26 @@ class PPO:
         best_solutions = solutions.clone()
         best_obj = obj.clone()  # obj is 1D initially from get_costs
 
+        record_component_history = (
+            getattr(self.opts, 'record_component_history', False)
+            and problem.NAME == 'mvpdtsp'
+        )
+        component_steps = []
+        component_objective = []
+        component_distance = []
+        component_makespan = []
+
+        def record_components(step):
+            with torch.no_grad():
+                distance, makespan = problem.compute_cost_components(batch, best_solutions)
+            component_steps.append(int(step))
+            component_objective.append(best_obj.clone())
+            component_distance.append(distance)
+            component_makespan.append(makespan)
+
+        if record_component_history:
+            record_components(0)
+
         for t in tqdm(range(self.opts.T_max), disable = self.opts.no_progress_bar or not show_bar, desc = 'rollout', bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}'):       
             
             # pass through model
@@ -210,6 +299,12 @@ class PPO:
             # record informations
             reward.append(rewards)  
             obj_history.append(obj)
+
+            step = t + 1
+            if record_component_history and (
+                step % self.opts.history_interval == 0 or step == self.opts.T_max
+            ):
+                record_components(step)
             
         # Select best augmentation per instance for reporting
         best_obj_per_aug = best_obj.view(bs, val_m)
@@ -219,6 +314,19 @@ class PPO:
         initial_solutions_per_inst = initial_solutions[gather_idx]
         initial_obj_per_inst = initial_obj.view(bs, val_m)[torch.arange(bs, device=best_idx.device), best_idx]
 
+        component_history = None
+        if record_component_history:
+            objective_by_aug = torch.stack(component_objective, 1).view(bs, val_m, -1)
+            distance_by_aug = torch.stack(component_distance, 1).view(bs, val_m, -1)
+            makespan_by_aug = torch.stack(component_makespan, 1).view(bs, val_m, -1)
+            history_best_idx = objective_by_aug.argmin(1, keepdim=True)
+            component_history = {
+                'steps': component_steps,
+                'objective': objective_by_aug.gather(1, history_best_idx).squeeze(1),
+                'distance': distance_by_aug.gather(1, history_best_idx).squeeze(1),
+                'makespan': makespan_by_aug.gather(1, history_best_idx).squeeze(1),
+            }
+
         out = (best_obj_per_inst, # batch_size - best cost across all T_max steps and augmentations
                torch.stack(obj_history,1)[:,:,0].view(bs, val_m, -1).min(1)[0],  # batch_size, T
                torch.stack(obj_history,1)[:,:,-1].view(bs, val_m, -1).min(1)[0],  # batch_size, T
@@ -227,6 +335,7 @@ class PPO:
                initial_solutions_per_inst, # initial solutions per instance
                initial_obj_per_inst, # initial cost per instance
                original_coords, # original coordinates (not augmented) for result saving
+               component_history,
                )
         
         return out
@@ -247,6 +356,7 @@ class PPO:
 def train(rank, problem, agent, val_dataset, tb_logger):
     
     opts = agent.opts  
+    process_group_initialized = False
 
     warnings.filterwarnings("ignore")
     torch.backends.cudnn.deterministic = True
@@ -256,9 +366,15 @@ def train(rank, problem, agent, val_dataset, tb_logger):
         random.seed(opts.seed)
         
     if opts.distributed:
-        device = torch.device("cuda", rank)
-        torch.distributed.init_process_group(backend='nccl', world_size=opts.world_size, rank = rank)
         torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
+        torch.distributed.init_process_group(
+            backend='nccl',
+            world_size=opts.world_size,
+            rank=rank,
+            timeout=timedelta(seconds=opts.dist_timeout),
+        )
+        process_group_initialized = True
         agent.actor.to(device)
         agent.critic.to(device)
         for state in agent.optimizer.state.values():
@@ -268,9 +384,11 @@ def train(rank, problem, agent, val_dataset, tb_logger):
         
 
         agent.actor = torch.nn.parallel.DistributedDataParallel(agent.actor,
-                                                               device_ids=[rank])
+                                                               device_ids=[rank],
+                                                               output_device=rank)
         if not opts.eval_only: agent.critic = torch.nn.parallel.DistributedDataParallel(agent.critic,
-                                                               device_ids=[rank])
+                                                               device_ids=[rank],
+                                                               output_device=rank)
         if not opts.no_tb and rank == 0:
             tb_logger = TbLogger(os.path.join(opts.log_dir, "{}_{}".format(opts.problem, 
                                                           opts.graph_size), opts.run_name))
@@ -320,185 +438,244 @@ def train(rank, problem, agent, val_dataset, tb_logger):
     if record_mvp_metrics and rank == 0 and not opts.no_saving:
         mvp_metrics_path = os.path.join(opts.save_dir, 'mvpdtsp_epoch_metrics.jsonl')
 
+    training_start_ts = None
+    completed_epochs = 0
+    if rank == 0:
+        training_start_ts = time.time()
+        _write_training_time_record(
+            opts,
+            start_ts=training_start_ts,
+            status='running',
+            completed_epochs=completed_epochs,
+        )
+
     # Start the actual training loop
     best_checkpoints = []  # list of (score, path)
     top_k = 10
-    for epoch in range(opts.epoch_start, opts.epoch_end):
-        
-        agent.lr_scheduler.step(epoch)
-        
-        # Training mode
-        if rank == 0:
-            print('\n\n')
-            print("|",format(f" Training epoch {epoch} ","*^60"),"|")
-            print("Training with actor lr={:.3e} critic lr={:.3e} for run {}".format(agent.optimizer.param_groups[0]['lr'], 
-                                                                                 agent.optimizer.param_groups[1]['lr'], opts.run_name) , flush=True)
-        
-        # Synchronize before dataset creation to avoid race conditions
-        if opts.distributed:
-            dist.barrier()
-        
-        # prepare training data
-        if problem.NAME == 'pdtsp_osm':
-            # For OSM-based problem, use pre-loaded dataset or generate online
-            if preloaded_training_dataset is not None:
-                # Use pre-loaded dataset (fast! no loading overhead)
-                full_dataset = preloaded_training_dataset
-                
-                # Sample epoch_size instances from the full dataset for this epoch
-                # This keeps behavior consistent with pdtsp (which generates epoch_size samples each epoch)
-                dataset_size = len(full_dataset)
-                
-                # Create random indices for this epoch (different for each epoch and rank)
-                np.random.seed(opts.seed + epoch * 1000 + rank)
-                if opts.epoch_size <= dataset_size:
-                    # Sample without replacement
-                    indices = np.random.choice(dataset_size, size=opts.epoch_size, replace=False)
-                else:
-                    # If epoch_size > dataset_size, sample with replacement
-                    indices = np.random.choice(dataset_size, size=opts.epoch_size, replace=True)
-                
-                # Create a subset for this epoch
-                training_dataset = Subset(full_dataset, indices)
-                
-                if rank == 0 and epoch == opts.epoch_start:
-                    print(f"📊 Using pre-loaded dataset: sampling {opts.epoch_size} instances per epoch from {dataset_size} total instances")
-            elif opts.train_dataset is not None:
-                # Fallback: load from file each epoch (slower)
-                training_dataset = problem.make_dataset(
-                    size=opts.graph_size,
-                    num_samples=opts.epoch_size,
-                    filename=opts.train_dataset,
-                    osm_place=opts.osm_place,
-                    capacity=opts.capacity
-                )
-                if rank == 0:
-                    print(f"📁 Loaded training data from: {opts.train_dataset}")
-            else:
-                # Online generation (slowest, not recommended)
-                training_dataset = problem.make_dataset(
-                    size=opts.graph_size, 
-                    num_samples=opts.epoch_size,
-                    osm_place=opts.osm_place,
-                    capacity=opts.capacity,
-                    seed=opts.seed + epoch * 1000 + rank  # Different seed per rank and epoch
-                )
-                if rank == 0:
-                    print(f"⚠️  Warning: Generating training data online (slow). Consider using --train_dataset for faster training.")
-            collate_fn = osm_collate_fn
-        else:
-            if problem.NAME == 'mvpdtsp':
-                training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size, num_vehicles=opts.num_vehicles)
-            else:
-                training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size)
-            collate_fn = pdp_collate_fn
-        
-        # Synchronize after dataset creation
-        if opts.distributed:
-            dist.barrier()
-        
-        if opts.distributed:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(training_dataset, shuffle=False)
-            training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size // opts.world_size, shuffle=False,
-                                            num_workers=0,
-                                            pin_memory=True,
-                                            sampler=train_sampler,
-                                            collate_fn=collate_fn)
-        else:
-            training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, shuffle=False,
-                                                       num_workers=0,
-                                                       pin_memory=True,
-                                                       collate_fn=collate_fn)
+    try:
+        for epoch in range(opts.epoch_start, opts.epoch_end):
             
-        # start training
-        step = epoch * (opts.epoch_size // opts.batch_size)  
-        pbar = tqdm(total = (opts.K_epochs) * (opts.epoch_size // opts.batch_size) * (opts.T_train // opts.n_step) ,
-                    disable = opts.no_progress_bar or rank!=0, desc = 'training',
-                    bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}')
-        epoch_metrics = None
-        if record_mvp_metrics:
-            epoch_metrics = {
-                'init_distance': [],
-                'init_makespan': [],
-                'final_distance': [],
-                'final_makespan': [],
-                'final_total_cost': [],
-                'final_objective_cost': [],
-                'total_reward': [],
-            }
-
-        for batch_id, batch in enumerate(training_dataloader):
-            batch_metrics = train_batch(rank,
-                                        problem,
-                                        agent,
-                                        epoch,
-                                        step,
-                                        batch,
-                                        tb_logger,
-                                        opts,
-                                        pbar,
-                                        record_metrics=record_mvp_metrics,
-                                        )
-            if epoch_metrics is not None and batch_metrics is not None:
-                for key in epoch_metrics:
-                    epoch_metrics[key].append(batch_metrics[key])
-            step += 1
-        pbar.close()
-
-        if record_mvp_metrics and rank == 0 and epoch_metrics is not None:
-            def _mean_or_zero(values):
-                return float(np.mean(values)) if len(values) > 0 else 0.0
-
-            epoch_summary = {
-                'epoch': int(epoch),
-                'num_batches': int(len(epoch_metrics['total_reward'])),
-                'avg_init_distance': _mean_or_zero(epoch_metrics['init_distance']),
-                'avg_init_makespan': _mean_or_zero(epoch_metrics['init_makespan']),
-                'avg_final_distance': _mean_or_zero(epoch_metrics['final_distance']),
-                'avg_final_makespan': _mean_or_zero(epoch_metrics['final_makespan']),
-                'avg_final_total_cost': _mean_or_zero(epoch_metrics['final_total_cost']),
-                'avg_final_objective_cost': _mean_or_zero(epoch_metrics['final_objective_cost']),
-                'avg_total_reward': _mean_or_zero(epoch_metrics['total_reward']),
-            }
-
-            if not opts.no_tb and tb_logger is not None:
-                tb_logger.log_value('train_epoch/avg_init_distance', epoch_summary['avg_init_distance'], epoch)
-                tb_logger.log_value('train_epoch/avg_init_makespan', epoch_summary['avg_init_makespan'], epoch)
-                tb_logger.log_value('train_epoch/avg_final_distance', epoch_summary['avg_final_distance'], epoch)
-                tb_logger.log_value('train_epoch/avg_final_makespan', epoch_summary['avg_final_makespan'], epoch)
-                tb_logger.log_value('train_epoch/avg_final_total_cost', epoch_summary['avg_final_total_cost'], epoch)
-                tb_logger.log_value('train_epoch/avg_final_objective_cost', epoch_summary['avg_final_objective_cost'], epoch)
-                tb_logger.log_value('train_epoch/avg_total_reward', epoch_summary['avg_total_reward'], epoch)
-
-            if not opts.no_saving and mvp_metrics_path is not None:
-                with open(mvp_metrics_path, 'a') as f:
-                    f.write(json.dumps(epoch_summary) + '\n')
-        
-        # validate the new model
-        val_score = None
-        if rank == 0 and not opts.distributed:
-            val_score = validate(rank, problem, agent, val_dataset, tb_logger, _id=epoch)
-        if rank == 0 and opts.distributed:
-            val_score = validate(rank, problem, agent, val_dataset, tb_logger, _id=epoch)
-
-        # save top-k models only (based on validation avg best cost)
-        if rank == 0 and not opts.no_saving and opts.checkpoint_epochs != 0:
-            if val_score is not None and (epoch % opts.checkpoint_epochs == 0 or epoch == opts.epoch_end - 1):
-                ckpt_path = os.path.join(opts.save_dir, f'epoch-{epoch}.pt')
-                if len(best_checkpoints) < top_k:
-                    agent.save(epoch)
-                    best_checkpoints.append((val_score, ckpt_path))
+            agent.lr_scheduler.step(epoch)
+            
+            # Training mode
+            if rank == 0:
+                print('\n\n')
+                print("|",format(f" Training epoch {epoch} ","*^60"),"|")
+                print("Training with actor lr={:.3e} critic lr={:.3e} for run {}".format(agent.optimizer.param_groups[0]['lr'], 
+                                                                                     agent.optimizer.param_groups[1]['lr'], opts.run_name) , flush=True)
+            
+            # Synchronize before dataset creation to avoid race conditions
+            if opts.distributed:
+                dist.barrier()
+            
+            # prepare training data
+            if problem.NAME == 'pdtsp_osm':
+                # For OSM-based problem, use pre-loaded dataset or generate online
+                if preloaded_training_dataset is not None:
+                    # Use pre-loaded dataset (fast! no loading overhead)
+                    full_dataset = preloaded_training_dataset
+                    
+                    # Sample epoch_size instances from the full dataset for this epoch
+                    # This keeps behavior consistent with pdtsp (which generates epoch_size samples each epoch)
+                    dataset_size = len(full_dataset)
+                    
+                    # Create random indices for this epoch (different for each epoch and rank)
+                    np.random.seed(opts.seed + epoch * 1000 + rank)
+                    if opts.epoch_size <= dataset_size:
+                        # Sample without replacement
+                        indices = np.random.choice(dataset_size, size=opts.epoch_size, replace=False)
+                    else:
+                        # If epoch_size > dataset_size, sample with replacement
+                        indices = np.random.choice(dataset_size, size=opts.epoch_size, replace=True)
+                    
+                    # Create a subset for this epoch
+                    training_dataset = Subset(full_dataset, indices)
+                    
+                    if rank == 0 and epoch == opts.epoch_start:
+                        print(f"📊 Using pre-loaded dataset: sampling {opts.epoch_size} instances per epoch from {dataset_size} total instances")
+                elif opts.train_dataset is not None:
+                    # Fallback: load from file each epoch (slower)
+                    training_dataset = problem.make_dataset(
+                        size=opts.graph_size,
+                        num_samples=opts.epoch_size,
+                        filename=opts.train_dataset,
+                        osm_place=opts.osm_place,
+                        capacity=opts.capacity
+                    )
+                    if rank == 0:
+                        print(f"📁 Loaded training data from: {opts.train_dataset}")
                 else:
-                    worst_idx = max(range(len(best_checkpoints)), key=lambda i: best_checkpoints[i][0])
-                    worst_score, worst_path = best_checkpoints[worst_idx]
-                    if val_score < worst_score:
+                    # Online generation (slowest, not recommended)
+                    training_dataset = problem.make_dataset(
+                        size=opts.graph_size, 
+                        num_samples=opts.epoch_size,
+                        osm_place=opts.osm_place,
+                        capacity=opts.capacity,
+                        seed=opts.seed + epoch * 1000 + rank  # Different seed per rank and epoch
+                    )
+                    if rank == 0:
+                        print(f"⚠️  Warning: Generating training data online (slow). Consider using --train_dataset for faster training.")
+                collate_fn = osm_collate_fn
+            else:
+                if problem.NAME == 'mvpdtsp':
+                    training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size, num_vehicles=opts.num_vehicles)
+                else:
+                    training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size)
+                collate_fn = pdp_collate_fn
+            
+            # Synchronize after dataset creation
+            if opts.distributed:
+                dist.barrier()
+            
+            if opts.distributed:
+                train_sampler = torch.utils.data.distributed.DistributedSampler(training_dataset, shuffle=False)
+                training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size // opts.world_size, shuffle=False,
+                                                num_workers=0,
+                                                pin_memory=True,
+                                                sampler=train_sampler,
+                                                collate_fn=collate_fn)
+            else:
+                training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, shuffle=False,
+                                                           num_workers=0,
+                                                           pin_memory=True,
+                                                           collate_fn=collate_fn)
+                
+            # start training
+            step = epoch * (opts.epoch_size // opts.batch_size)  
+            pbar = tqdm(total = (opts.K_epochs) * (opts.epoch_size // opts.batch_size) * (opts.T_train // opts.n_step) ,
+                        disable = opts.no_progress_bar or rank!=0, desc = 'training',
+                        bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}')
+            epoch_metrics = None
+            if record_mvp_metrics:
+                epoch_metrics = {
+                    'init_distance': [],
+                    'init_makespan': [],
+                    'final_distance': [],
+                    'final_makespan': [],
+                    'final_total_cost': [],
+                    'final_objective_cost': [],
+                    'total_reward': [],
+                }
+
+            for batch_id, batch in enumerate(training_dataloader):
+                batch_metrics = train_batch(rank,
+                                            problem,
+                                            agent,
+                                            epoch,
+                                            step,
+                                            batch,
+                                            tb_logger,
+                                            opts,
+                                            pbar,
+                                            record_metrics=record_mvp_metrics,
+                                            )
+                if epoch_metrics is not None and batch_metrics is not None:
+                    for key in epoch_metrics:
+                        epoch_metrics[key].append(batch_metrics[key])
+                step += 1
+            pbar.close()
+
+            if record_mvp_metrics and rank == 0 and epoch_metrics is not None:
+                def _mean_or_zero(values):
+                    return float(np.mean(values)) if len(values) > 0 else 0.0
+
+                epoch_summary = {
+                    'epoch': int(epoch),
+                    'num_batches': int(len(epoch_metrics['total_reward'])),
+                    'avg_init_distance': _mean_or_zero(epoch_metrics['init_distance']),
+                    'avg_init_makespan': _mean_or_zero(epoch_metrics['init_makespan']),
+                    'avg_final_distance': _mean_or_zero(epoch_metrics['final_distance']),
+                    'avg_final_makespan': _mean_or_zero(epoch_metrics['final_makespan']),
+                    'avg_final_total_cost': _mean_or_zero(epoch_metrics['final_total_cost']),
+                    'avg_final_objective_cost': _mean_or_zero(epoch_metrics['final_objective_cost']),
+                    'avg_total_reward': _mean_or_zero(epoch_metrics['total_reward']),
+                }
+
+                if not opts.no_tb and tb_logger is not None:
+                    tb_logger.log_value('train_epoch/avg_init_distance', epoch_summary['avg_init_distance'], epoch)
+                    tb_logger.log_value('train_epoch/avg_init_makespan', epoch_summary['avg_init_makespan'], epoch)
+                    tb_logger.log_value('train_epoch/avg_final_distance', epoch_summary['avg_final_distance'], epoch)
+                    tb_logger.log_value('train_epoch/avg_final_makespan', epoch_summary['avg_final_makespan'], epoch)
+                    tb_logger.log_value('train_epoch/avg_final_total_cost', epoch_summary['avg_final_total_cost'], epoch)
+                    tb_logger.log_value('train_epoch/avg_final_objective_cost', epoch_summary['avg_final_objective_cost'], epoch)
+                    tb_logger.log_value('train_epoch/avg_total_reward', epoch_summary['avg_total_reward'], epoch)
+
+                if not opts.no_saving and mvp_metrics_path is not None:
+                    with open(mvp_metrics_path, 'a') as f:
+                        f.write(json.dumps(epoch_summary) + '\n')
+            
+            # validate the new model
+            val_score = None
+            if rank == 0 and not opts.distributed:
+                val_score = validate(rank, problem, agent, val_dataset, tb_logger, _id=epoch)
+            if opts.distributed:
+                shard_paths = [_validation_shard_path(opts, epoch, r) for r in range(opts.world_size)]
+                shard_path = shard_paths[rank]
+                done_path = _validation_done_path(opts, epoch)
+                if rank == 0:
+                    os.makedirs(os.path.dirname(shard_path), exist_ok=True)
+                    for path in shard_paths:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    if os.path.exists(done_path):
+                        os.remove(done_path)
+                dist.barrier()
+
+                val_score = validate(
+                    rank,
+                    problem,
+                    agent,
+                    val_dataset,
+                    tb_logger,
+                    distributed=True,
+                    _id=epoch,
+                    use_collectives=False,
+                    shard_result_path=shard_path,
+                    aggregate_result_paths=shard_paths if rank == 0 else None,
+                )
+                if rank == 0:
+                    with open(done_path, 'w') as f:
+                        json.dump({'epoch': int(epoch), 'val_score': val_score}, f)
+                else:
+                    _wait_for_file(done_path)
+
+                dist.barrier()
+                if rank == 0:
+                    _cleanup_validation_sync_files(shard_paths + [done_path])
+                dist.barrier()
+
+            # save top-k models only (based on validation avg best cost)
+            if rank == 0 and not opts.no_saving and opts.checkpoint_epochs != 0:
+                if val_score is not None and (epoch % opts.checkpoint_epochs == 0 or epoch == opts.epoch_end - 1):
+                    ckpt_path = os.path.join(opts.save_dir, f'epoch-{epoch}.pt')
+                    if len(best_checkpoints) < top_k:
                         agent.save(epoch)
-                        if os.path.exists(worst_path):
-                            os.remove(worst_path)
-                        best_checkpoints[worst_idx] = (val_score, ckpt_path)
-        
-        # syn
-        if opts.distributed: dist.barrier()
+                        best_checkpoints.append((val_score, ckpt_path))
+                    else:
+                        worst_idx = max(range(len(best_checkpoints)), key=lambda i: best_checkpoints[i][0])
+                        worst_score, worst_path = best_checkpoints[worst_idx]
+                        if val_score < worst_score:
+                            agent.save(epoch)
+                            if os.path.exists(worst_path):
+                                os.remove(worst_path)
+                            best_checkpoints[worst_idx] = (val_score, ckpt_path)
+
+            completed_epochs += 1
+            
+            # syn
+            if opts.distributed:
+                dist.barrier()
+    finally:
+        if opts.distributed and process_group_initialized and dist.is_initialized():
+            dist.destroy_process_group()
+        if rank == 0 and training_start_ts is not None:
+            _write_training_time_record(
+                opts,
+                start_ts=training_start_ts,
+                end_ts=time.time(),
+                status='completed' if completed_epochs == (opts.epoch_end - opts.epoch_start) else 'interrupted',
+                completed_epochs=completed_epochs,
+            )
 
     
 def train_batch(
@@ -760,7 +937,7 @@ def train_batch(
             'init_makespan': init_makespan.mean().item(),
             'final_distance': final_distance.mean().item(),
             'final_makespan': final_makespan.mean().item(),
-            'final_total_cost': (final_distance + final_makespan).mean().item(),
+            'final_total_cost': problem.proposed_cost(final_distance, final_makespan).mean().item(),
             'final_objective_cost': final_objective.mean().item(),
             'total_reward': total_reward_acc.mean().item(),
         }

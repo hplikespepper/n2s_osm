@@ -2,10 +2,17 @@
 """
 OR-Tools baseline for MVPDTSP.
 Outputs results JSON compatible with N2S MVPDTSP format.
+The combined objective is total distance + (num_vehicles - 1) * makespan.
+Use --num_workers for parallel solving across instances. Timing fields are seconds:
+Use --pair_relocate full|light to select the pickup-delivery relocation neighborhood.
+solve_time includes model construction, search and route extraction per instance;
+solve_wall_time includes worker startup/shutdown and cost reporting, but excludes
+dataset loading and JSON writing.
 """
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import time
 from datetime import datetime
@@ -22,12 +29,14 @@ except Exception:  # pragma: no cover
 try:
     from ortools.constraint_solver import routing_enums_pb2
     from ortools.constraint_solver import pywrapcp
+    from ortools.util import optional_boolean_pb2
 except Exception as exc:  # pragma: no cover
     raise ImportError(
         "OR-Tools is required. Install with: pip install ortools"
     ) from exc
 
 from problems.problem_mvpdtsp import MVPDTSP, MVPDPDataset
+from baseline_summary import summarize_result
 
 
 def build_distance_matrix(coords: np.ndarray, scale: float) -> np.ndarray:
@@ -44,7 +53,12 @@ def solve_instance(
     scale: float,
     log_search: bool,
     first_solution_only: bool,
+    pair_relocate: str = "full",
 ) -> Tuple[List[int], List[List[int]]]:
+    if objective not in {"distance", "distance+makespan"}:
+        raise ValueError(f"Unsupported objective: {objective}")
+    if pair_relocate not in {"full", "light"}:
+        raise ValueError(f"Unsupported pair relocation mode: {pair_relocate}")
     num_nodes = coords.shape[0]
     starts = list(range(num_vehicles))
     ends = list(range(num_vehicles))
@@ -66,8 +80,10 @@ def solve_instance(
     routing.AddDimension(transit_callback, 0, max_distance, True, "Distance")
     distance_dim = routing.GetDimensionOrDie("Distance")
 
-    if objective in {"distance+makespan", "makespan"}:
-        distance_dim.SetGlobalSpanCostCoefficient(1)
+    if objective == "distance+makespan":
+        # All routes start at distance zero, so the global span is makespan.
+        # Match MVPDTSP.makespan_weight used by N2S.
+        distance_dim.SetGlobalSpanCostCoefficient(num_vehicles - 1)
 
     num_pairs = (num_nodes - num_vehicles) // 2
     pickup_start = num_vehicles
@@ -83,8 +99,17 @@ def solve_instance(
         routing.solver().Add(distance_dim.CumulVar(pickup_index) <= distance_dim.CumulVar(delivery_index))
 
     search_params = pywrapcp.DefaultRoutingSearchParameters()
+    # OR-Tools skips the light operator when the full operator is enabled.
+    operators = search_params.local_search_operators
+    operators.use_relocate_pair = (
+        optional_boolean_pb2.BOOL_TRUE if pair_relocate == "full"
+        else optional_boolean_pb2.BOOL_FALSE
+    )
+    operators.use_light_relocate_pair = optional_boolean_pb2.BOOL_TRUE
     search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    if not first_solution_only:
+    if first_solution_only:
+        search_params.solution_limit = 1
+    else:
         search_params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     search_params.time_limit.FromSeconds(time_limit)
     search_params.log_search = log_search
@@ -139,19 +164,67 @@ def compute_costs(problem: MVPDTSP, coords: np.ndarray, rec: List[int]) -> Tuple
     )
 
 
+def _init_worker():
+    # Avoid nested Torch thread pools when running multiple CPU processes.
+    torch.set_num_threads(1)
+
+
+def _solve_task(task):
+    i, coords, args = task
+    start = time.perf_counter()
+    try:
+        rec, vehicle_routes = solve_instance(
+            coords, args.num_vehicles, args.time_limit, args.objective,
+            args.scale, args.log_search, args.first_solution_only,
+            args.pair_relocate,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"Instance {i}: {exc}") from exc
+    elapsed = time.perf_counter() - start
+    problem = MVPDTSP(
+        args.graph_size,
+        num_vehicles=args.num_vehicles,
+        use_makespan=(args.objective == "distance+makespan"),
+    )
+    distance, makespan, vehicle_costs = compute_costs(problem, coords, rec)
+    return {
+        "instance_id": i,
+        "worker_pid": os.getpid(),
+        "solve_time": elapsed,
+        "best_cost": distance + problem.makespan_weight * makespan,
+        "best_distance_cost": distance,
+        "best_makespan_cost": makespan,
+        "makespan_weight": problem.makespan_weight,
+        "best_vehicle_distance_costs": vehicle_costs,
+        "best_vehicle_completion_times": vehicle_costs,
+        "best_rec": rec,
+        "vehicle_routes": vehicle_routes,
+        "route_lengths": [len(r) for r in vehicle_routes],
+        "total_nodes": len(coords),
+        "coordinates": coords.tolist(),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OR-Tools baseline for MVPDTSP")
     parser.add_argument("--val_dataset", type=str, default="./datasets/pdp_20.pkl")
     parser.add_argument("--val_size", type=int, default=1000)
     parser.add_argument("--graph_size", type=int, default=20)
     parser.add_argument("--num_vehicles", type=int, default=2)
-    parser.add_argument("--T_max", type=int, default=1500)
+    parser.add_argument("--T_max", type=int, default=1500, help="Metadata only; does not limit search")
+    parser.add_argument("--num_workers", type=int, default=1,
+                        help="CPU worker processes across instances (1=serial, 0=available CPUs)")
     parser.add_argument("--time_limit", type=int, default=30, help="Seconds per instance")
+    parser.add_argument(
+        "--pair_relocate", choices=["full", "light"], default="full",
+        help="Pickup-delivery relocation neighborhood (default: full)",
+    )
     parser.add_argument(
         "--objective",
         type=str,
         default="distance+makespan",
-        choices=["distance", "makespan", "distance+makespan"],
+        choices=["distance", "distance+makespan"],
+        help="distance, or distance + (num_vehicles - 1) * makespan (N2S objective)",
     )
     parser.add_argument("--log_search", action="store_true", help="Enable OR-Tools search logging")
     parser.add_argument(
@@ -161,7 +234,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scale", type=float, default=1e6, help="Distance scale for OR-Tools")
     parser.add_argument("--output", type=str, default=None, help="Output JSON path (optional)")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.graph_size <= 0 or args.graph_size % 2:
+        parser.error("--graph_size must be positive and even")
+    if args.num_vehicles < 1 or args.val_size < 1 or args.time_limit < 1:
+        parser.error("--num_vehicles, --val_size and --time_limit must be positive")
+    if args.num_workers < 0:
+        parser.error("--num_workers must be nonnegative")
+    if not np.isfinite(args.scale) or args.scale <= 0:
+        parser.error("--scale must be finite and positive")
+    return args
 
 
 def main() -> None:
@@ -175,82 +257,63 @@ def main() -> None:
         num_vehicles=args.num_vehicles,
     )
 
-    print("[Stage] Initializing problem...")
-    problem = MVPDTSP(
-        p_size=args.graph_size,
-        num_vehicles=args.num_vehicles,
-        with_assert=False,
-        use_makespan=(args.objective != "distance"),
-    )
+    if not len(dataset):
+        raise ValueError("Validation dataset is empty")
+    expected_nodes = args.graph_size + args.num_vehicles
+    if any(item["coordinates"].shape != (expected_nodes, 2) for item in dataset):
+        raise ValueError("Dataset node count does not match --graph_size")
+    available_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    num_workers = min(args.num_workers or available_cpus, len(dataset))
+    _init_worker()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_data = {
         "timestamp": timestamp,
         "problem": "mvpdtsp",
+        "method": "ortools",
         "graph_size": args.graph_size,
         "T_max": args.T_max,
         "val_size": min(args.val_size, len(dataset)),
         "instances": [],
         "num_vehicles": args.num_vehicles,
+        "objective": args.objective,
+        "makespan_weight": args.num_vehicles - 1 if args.objective == "distance+makespan" else 0,
+        "num_workers": num_workers,
+        "time_limit": args.time_limit,
+        "first_solution_only": args.first_solution_only,
+        "pair_relocate": args.pair_relocate,
+        "scale": args.scale,
     }
 
     total_instances = results_data["val_size"]
     print(
         f"[Stage] Solving {total_instances} instances with OR-Tools... "
-        f"(time_limit={args.time_limit}s, first_solution_only={args.first_solution_only})"
+        f"(time_limit={args.time_limit}s, first_solution_only={args.first_solution_only}, "
+        f"pair_relocate={args.pair_relocate})"
     )
 
-    if tqdm is not None:
-        iterator = tqdm(range(total_instances), desc="Solving", unit="inst")
+    print(f"[Stage] Using {num_workers} CPU worker(s), one Torch thread per worker")
+    tasks = ((i, dataset[i]["coordinates"].cpu().numpy(), args) for i in range(total_instances))
+    wall_start = time.perf_counter()
+
+    def collect(iterator):
+        if tqdm is not None:
+            iterator = tqdm(iterator, total=total_instances, desc="Solving", unit="inst")
+        for result in iterator:
+            results_data["instances"].append(result)
+            if tqdm is None:
+                print(f"[Stage] Completed {len(results_data['instances'])}/{total_instances} instances")
+
+    if num_workers == 1:
+        collect(map(_solve_task, tasks))
     else:
-        iterator = range(total_instances)
+        with mp.get_context("spawn").Pool(num_workers, initializer=_init_worker) as pool:
+            collect(pool.imap_unordered(_solve_task, tasks, chunksize=1))
+    results_data["solve_wall_time"] = time.perf_counter() - wall_start
+    results_data["instances"].sort(key=lambda result: result["instance_id"])
+    print(f"[Stage] Solve wall time: {results_data['solve_wall_time']:.3f}s")
 
-    for i in iterator:
-        if tqdm is None:
-            print(f"[Stage] Solving instance {i + 1}/{total_instances}")
-        instance = dataset[i]
-        coords = instance["coordinates"].cpu().numpy()
-
-        rec, vehicle_routes = solve_instance(
-            coords=coords,
-            num_vehicles=args.num_vehicles,
-            time_limit=args.time_limit,
-            objective=args.objective,
-            scale=args.scale,
-            log_search=args.log_search,
-            first_solution_only=args.first_solution_only,
-        )
-
-        if tqdm is None:
-            print(f"[Stage] Computing costs for instance {i + 1}/{total_instances}")
-
-        distance, makespan, vehicle_costs = compute_costs(problem, coords, rec)
-        if args.objective == "distance":
-            best_cost = distance
-        elif args.objective == "makespan":
-            best_cost = makespan
-        else:
-            best_cost = distance + makespan
-
-        instance_data = {
-            "instance_id": i,
-            "best_cost": best_cost,
-            "best_distance_cost": distance,
-            "best_makespan_cost": makespan,
-            "best_vehicle_distance_costs": vehicle_costs,
-            "best_vehicle_completion_times": vehicle_costs,
-            "best_rec": rec,
-            "vehicle_routes": vehicle_routes,
-            "route_lengths": [len(r) for r in vehicle_routes],
-            "total_nodes": len(coords),
-            "coordinates": coords.tolist(),
-        }
-        results_data["instances"].append(instance_data)
-
-        if tqdm is None and (i + 1) % 10 == 0:
-            print(f"  Completed {i + 1}/{total_instances} instances")
-
-    results_dir = os.path.dirname(args.output) if args.output else "results"
+    results_dir = (os.path.dirname(args.output) or ".") if args.output else "results"
     os.makedirs(results_dir, exist_ok=True)
 
     print("[Stage] Writing results...")
@@ -259,6 +322,7 @@ def main() -> None:
     else:
         output_path = os.path.join(results_dir, f"mvpdtsp_results_ortools_{timestamp}.json")
 
+    results_data["summary"] = summarize_result(results_data)
     with open(output_path, "w") as f:
         json.dump(results_data, f, indent=2)
 

@@ -3,10 +3,14 @@
 Monte Carlo baseline for MVPDTSP.
 Randomly samples feasible solutions and keeps the best.
 Outputs results JSON compatible with N2S MVPDTSP / OR-Tools format.
+The default objective is D + (num_vehicles - 1) * M, matching N2S.
+Use --num_workers N to solve instances in separate CPU processes. Seeds are
+assigned per instance so serial and parallel runs sample the same candidates.
 """
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import random
 import time
@@ -22,6 +26,7 @@ except Exception:  # pragma: no cover
     tqdm = None
 
 from problems.problem_mvpdtsp import MVPDTSP, MVPDPDataset
+from baseline_summary import summarize_result
 
 
 def _build_rec(num_vehicles: int, num_pairs: int, vehicle_routes: List[List[int]]) -> List[int]:
@@ -151,7 +156,7 @@ def generate_greedy_solution(
 
     # --- random perturbation ---
     # swap some pairs between vehicles
-    num_swaps = max(1, int(num_pairs * perturb_ratio))
+    num_swaps = int(num_pairs * perturb_ratio) if num_vehicles > 1 else 0
     for _ in range(num_swaps):
         v1, v2 = random.sample(range(num_vehicles), 2)
         if vehicle_pairs[v1]:
@@ -181,7 +186,11 @@ def solve_instance(
     perturb_ratio: float = 0.3,
 ) -> Tuple[List[int], List[List[int]], float]:
     """Run Monte Carlo sampling for one instance."""
+    if num_samples < 1:
+        raise ValueError("num_samples must be positive")
     num_nodes = coords.shape[0]
+    if num_vehicles < 1 or num_nodes <= num_vehicles or (num_nodes - num_vehicles) % 2:
+        raise ValueError("Expected vehicle depots followed by pickup-delivery pairs")
     num_pairs = (num_nodes - num_vehicles) // 2
 
     problem = MVPDTSP(
@@ -206,7 +215,8 @@ def solve_instance(
         else:
             rec, routes = generate_random_solution(num_vehicles, num_pairs)
         rec_tensor = torch.as_tensor(rec, dtype=torch.long).unsqueeze(0)
-        cost = problem.get_costs(batch, rec_tensor).item()
+        distance, makespan = problem.compute_cost_components(batch, rec_tensor)
+        cost = objective_cost(distance.item(), makespan.item(), objective, num_vehicles)
 
         if cost < best_cost:
             best_cost = cost
@@ -231,13 +241,68 @@ def compute_costs(
     )
 
 
+def objective_cost(distance, makespan, objective, num_vehicles):
+    """Use the same objective for candidate selection and result reporting."""
+    if objective == "distance":
+        return distance
+    if objective == "makespan":
+        return makespan
+    if objective == "distance+makespan":
+        return distance + (num_vehicles - 1) * makespan
+    raise ValueError(f"Unknown objective: {objective}")
+
+
+def _init_worker():
+    # Each process handles one instance at a time; avoid nested CPU thread pools.
+    torch.set_num_threads(1)
+
+
+def _solve_task(task):
+    i, coords, args = task
+    instance_seed = (args.seed + i) % (2 ** 32)
+    random.seed(instance_seed)
+    np.random.seed(instance_seed)
+    torch.manual_seed(instance_seed)
+    t0 = time.perf_counter()
+    rec, vehicle_routes, best_cost = solve_instance(
+        coords, args.num_vehicles, args.num_mc_samples, args.objective,
+        args.greedy, args.perturb_ratio,
+    )
+    elapsed = time.perf_counter() - t0
+    problem = MVPDTSP(
+        args.graph_size,
+        num_vehicles=args.num_vehicles,
+        use_makespan=(args.objective != "distance"),
+    )
+    distance, makespan, vehicle_costs = compute_costs(problem, coords, rec)
+    assert best_cost == objective_cost(distance, makespan, args.objective, args.num_vehicles)
+    return {
+        "instance_id": i,
+        "instance_seed": instance_seed,
+        "worker_pid": os.getpid(),
+        "best_cost": best_cost,
+        "best_distance_cost": distance,
+        "best_makespan_cost": makespan,
+        "best_vehicle_distance_costs": vehicle_costs,
+        "best_vehicle_completion_times": vehicle_costs,
+        "best_rec": rec,
+        "vehicle_routes": vehicle_routes,
+        "route_lengths": [len(r) for r in vehicle_routes],
+        "total_nodes": len(coords),
+        "coordinates": coords.tolist(),
+        "solve_time": elapsed,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Monte Carlo baseline for MVPDTSP")
     parser.add_argument("--val_dataset", type=str, default="./datasets/pdp_20.pkl")
     parser.add_argument("--val_size", type=int, default=1000)
     parser.add_argument("--graph_size", type=int, default=20)
     parser.add_argument("--num_vehicles", type=int, default=2)
-    parser.add_argument("--T_max", type=int, default=1500)
+    parser.add_argument("--T_max", type=int, default=1500, help="Metadata only; does not limit sampling")
+    parser.add_argument("--num_workers", type=int, default=1,
+                        help="CPU worker processes across instances (1=serial, 0=available CPUs)")
     parser.add_argument(
         "--num_mc_samples",
         type=int,
@@ -249,6 +314,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="distance+makespan",
         choices=["distance", "makespan", "distance+makespan"],
+        help="distance+makespan uses D + (num_vehicles - 1) * M, matching N2S",
     )
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -261,9 +327,18 @@ def parse_args() -> argparse.Namespace:
         "--perturb_ratio",
         type=float,
         default=0.3,
-        help="Fraction of solution to perturb in greedy mode (0=pure greedy, 1=nearly random)",
+        help="Pair transfer attempts / number of pairs in greedy mode; routes remain randomized",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.graph_size <= 0 or args.graph_size % 2:
+        parser.error("--graph_size must be positive and even")
+    if args.num_vehicles < 1 or args.val_size < 1 or args.num_mc_samples < 1:
+        parser.error("--num_vehicles, --val_size and --num_mc_samples must be positive")
+    if args.num_workers < 0:
+        parser.error("--num_workers must be nonnegative")
+    if not 0 <= args.perturb_ratio <= 1:
+        parser.error("--perturb_ratio must be between 0 and 1")
+    return args
 
 
 def main() -> None:
@@ -280,13 +355,14 @@ def main() -> None:
         num_vehicles=args.num_vehicles,
     )
 
-    print("[Stage] Initializing problem...")
-    problem = MVPDTSP(
-        p_size=args.graph_size,
-        num_vehicles=args.num_vehicles,
-        with_assert=False,
-        use_makespan=(args.objective != "distance"),
-    )
+    if not len(dataset):
+        raise ValueError("Validation dataset is empty")
+    expected_nodes = args.graph_size + args.num_vehicles
+    if any(item["coordinates"].shape != (expected_nodes, 2) for item in dataset):
+        raise ValueError("Dataset node count does not match --graph_size")
+    available_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    num_workers = min(args.num_workers or available_cpus, len(dataset))
+    _init_worker()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     method = "monte_carlo_greedy" if args.greedy else "monte_carlo"
@@ -300,6 +376,10 @@ def main() -> None:
         "num_mc_samples": args.num_mc_samples,
         "instances": [],
         "num_vehicles": args.num_vehicles,
+        "objective": args.objective,
+        "makespan_weight": args.num_vehicles - 1 if args.objective == "distance+makespan" else (1 if args.objective == "makespan" else 0),
+        "seed": args.seed,
+        "num_workers": num_workers,
     }
 
     total_instances = results_data["val_size"]
@@ -308,57 +388,26 @@ def main() -> None:
         f"({args.num_mc_samples} samples/instance)..."
     )
 
-    if tqdm is not None:
-        iterator = tqdm(range(total_instances), desc="Solving", unit="inst")
+    print(f"[Stage] Using {num_workers} CPU worker(s), one Torch thread per worker")
+    tasks = ((i, dataset[i]["coordinates"].cpu().numpy(), args) for i in range(total_instances))
+    wall_start = time.perf_counter()
+
+    def collect(iterator):
+        if tqdm is not None:
+            iterator = tqdm(iterator, total=total_instances, desc="Solving", unit="inst")
+        for result in iterator:
+            results_data["instances"].append(result)
+
+    if num_workers == 1:
+        collect(map(_solve_task, tasks))
     else:
-        iterator = range(total_instances)
+        with mp.get_context("spawn").Pool(num_workers, initializer=_init_worker) as pool:
+            collect(pool.imap_unordered(_solve_task, tasks, chunksize=1))
+    results_data["solve_wall_time"] = time.perf_counter() - wall_start
+    results_data["instances"].sort(key=lambda result: result["instance_id"])
+    print(f"[Stage] Solve wall time: {results_data['solve_wall_time']:.3f}s")
 
-    for i in iterator:
-        if tqdm is None:
-            print(f"[Stage] Solving instance {i + 1}/{total_instances}")
-
-        instance = dataset[i]
-        coords = instance["coordinates"].cpu().numpy()
-
-        t0 = time.perf_counter()
-        rec, vehicle_routes, _ = solve_instance(
-            coords=coords,
-            num_vehicles=args.num_vehicles,
-            num_samples=args.num_mc_samples,
-            objective=args.objective,
-            greedy=args.greedy,
-            perturb_ratio=args.perturb_ratio,
-        )
-        elapsed = time.perf_counter() - t0
-
-        distance, makespan, vehicle_costs = compute_costs(problem, coords, rec)
-        if args.objective == "distance":
-            best_cost = distance
-        elif args.objective == "makespan":
-            best_cost = makespan
-        else:
-            best_cost = distance + makespan
-
-        instance_data = {
-            "instance_id": i,
-            "best_cost": best_cost,
-            "best_distance_cost": distance,
-            "best_makespan_cost": makespan,
-            "best_vehicle_distance_costs": vehicle_costs,
-            "best_vehicle_completion_times": vehicle_costs,
-            "best_rec": rec,
-            "vehicle_routes": vehicle_routes,
-            "route_lengths": [len(r) for r in vehicle_routes],
-            "total_nodes": len(coords),
-            "coordinates": coords.tolist(),
-            "solve_time": elapsed,
-        }
-        results_data["instances"].append(instance_data)
-
-        if tqdm is None and (i + 1) % 10 == 0:
-            print(f"  Completed {i + 1}/{total_instances} instances")
-
-    results_dir = os.path.dirname(args.output) if args.output else "results"
+    results_dir = (os.path.dirname(args.output) or ".") if args.output else "results"
     os.makedirs(results_dir, exist_ok=True)
 
     if args.output:
@@ -369,6 +418,7 @@ def main() -> None:
         )
 
     print("[Stage] Writing results...")
+    results_data["summary"] = summarize_result(results_data)
     with open(output_path, "w") as f:
         json.dump(results_data, f, indent=2)
 

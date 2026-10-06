@@ -73,6 +73,9 @@ python run.py --problem mvpdtsp --graph_size 20 --num_vehicles 2 \
 	python run.py --eval_only --problem mvpdtsp --graph_size 20 --num_vehicles 2 --val_size 256 --val_batch_size 256 --T_max 3000 --run_name 'mv20_eval_epoch198' --load_path outputs/mvpdtsp_20/mvpdtsp20_makespan_log_20260130T200924/epoch-198.pt --makespan
 	**一定要调大T_max到3000**
 
+	50个节点：
+	CUDA_VISIBLE_DEVICES=2 python run.py --eval_only --problem mvpdtsp --graph_size 50 --num_vehicles 2 --val_size 256 --val_batch_size 256 --T_max 3000 --run_name 'mv50_eval_epoch199' --load_path outputs/mvpdtsp_50/mvpdtsp50_makespan_log_20260311T220152/epoch-199.pt --makespan --val_dataset ./datasets/pdp_50.pkl 
+
 可视化：
 1. 使用best_rec(邻接表示)
 	python vis_mvpdtsp_rec.py --instance_id 0 --results_file ./results/mvpdtsp_results_mv_198.json --save_path visualizations/mv_198.png
@@ -120,3 +123,41 @@ python analysis_figure.py --result_file ./outputs/mvpdtsp_20/mvpdtsp20_makespan_
 03/09/2026
 # 新增对蒙特卡洛结果的统计分析脚本（特别的，包含solve time，其他的结果中似乎没有这项）
 python analysis_json.py results/mvpdtsp_results_mc_20260309_150953.json
+
+# 3 vehicles
+	-bash mv_3_exp.sh
+	-CUDA_VISIBLE_DEVICES=2 GRAPH_SIZES="50 100" VAL_SIZE=1000 VAL_BATCH_SIZE=1000 PRINT_SOLUTION=1 bash mv_3_eval.sh
+# 05/06/2026
+	发现重大bug，若只是用 dis + makespan，在2车的情况下适用，但是扩展到更多车的情况下，makespan的边际效应就很小了，导致塌缩到只是用2辆车。因此做出调整：
+	distance + (num_vehicles - 1) * makespan
+
+# 09/15/2026
+	修正了n2s_mv/MonteCarlo_mvpdp.py的一些小问题（不影响结果），并开启了并行运行的功能。
+	新增mv_mc.sh用于多车辆实验
+	新增了mv_ortools.sh用于多车辆实验
+	可视化（通用）：
+	python vis_mvpdtsp.py \
+	--results_file result_mc/run_20260915_112436_3UijNR/mc_50_mv2.json \
+	--instance_id 0 \
+	--save_path result_mc/run_20260915_112436_3UijNR/mc_50_mv2_instance_0.png
+
+
+# 09/17/2026
+	更新了ortools_baseline.py: 新增"--pair_relocate", choices=["full", "light"], default="full",full为完整算子，而light是轻量版算子：
+	| 对比项 | 完整版 | 轻量版 |
+	| 调整对象 | 一对取货点和送货点 | 同样是一对取送货点 |
+	| 插入位置 | 分别枚举取货、送货位置的组合 | 根据已有请求对等结构，限制位置组合 |
+	| 候选数量 | 较多 | 较少 |
+	| 单轮搜索开销 | 较大 | 通常较小 |
+	| 跨车辆移动 | 支持 | 支持 |
+	| 全局最优保证 | 没有 | 没有 |
+
+	* 轻量版：用规则关联两个位置
+		当前版本的轻量配置实际包含两种移动：
+		- LightPairRelocateOperator：借助目标路线已有请求对的位置安排新请求对。例如把新取货点放到另一取货点后，再把对应送货点放到另一送货点后。
+		- GroupPairAndRelocate：将取货和送货组成相邻的 P → D，一起移到某个位置。
+		因此，轻量版并不强制所有请求都取完立刻送，也仍然允许交错取送；只是减少了单次移动时尝试的位置组合。
+
+	mv_ortools.sh为轻量版实验脚本
+	mv_ortools_full.sh为对100节点额外进行的完整版算子实验，特别的，time_limit为900，需要的时间很长
+

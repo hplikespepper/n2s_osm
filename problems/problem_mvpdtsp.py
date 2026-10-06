@@ -8,7 +8,13 @@ class MVPDTSP(object):
 
     NAME = 'mvpdtsp'  # Multi-Vehicle Pickup and Delivery TSP
 
-    def __init__(self, p_size, num_vehicles=2, init_val_met='p2d', with_assert=False, capacity=None, use_makespan=False):
+    OBJECTIVES = ('distance', 'only_makespan', 'proposed')
+
+    def __init__(self, p_size, num_vehicles=2, init_val_met='p2d', with_assert=False,
+                 capacity=None, use_makespan=False, objective=None):
+        assert p_size > 0, "p_size must be positive"
+        assert p_size % 2 == 0, "p_size must be even for pickup-delivery pairing"
+        assert num_vehicles >= 1, "num_vehicles must be at least 1"
 
         self.size = p_size  # number of pickup+delivery nodes
         self.num_vehicles = num_vehicles
@@ -19,12 +25,22 @@ class MVPDTSP(object):
         self.do_assert = with_assert
         self.init_val_met = init_val_met
         self.capacity = capacity
-        self.use_makespan = use_makespan
+        if objective is None:
+            objective = 'proposed' if use_makespan else 'distance'
+        if objective not in self.OBJECTIVES:
+            raise ValueError(f'Unsupported MVPDTSP objective: {objective}')
+        self.objective = objective
+        self.use_makespan = objective != 'distance'
+        self.makespan_weight = (
+            self.num_vehicles - 1 if objective == 'proposed'
+            else (1 if objective == 'only_makespan' else 0)
+        )
         self.state = 'eval'
         print(
             f'MVPDTSP with {self.size} nodes and {self.num_vehicles} vehicles.',
             ' Do assert:', with_assert,
-            ' Use makespan:', use_makespan,
+            ' Objective:', self.objective,
+            ' Makespan weight:', self.makespan_weight,
         )
 
     def input_feature_encoding(self, batch):
@@ -365,9 +381,17 @@ class MVPDTSP(object):
     def get_costs(self, batch, rec):
 
         distance, makespan = self.compute_cost_components(batch, rec)
-        if self.use_makespan:
-            return distance + makespan
-        return distance
+        return self.objective_cost(distance, makespan)
+
+    def objective_cost(self, distance, makespan):
+        if self.objective == 'distance':
+            return distance
+        if self.objective == 'only_makespan':
+            return makespan
+        return self.proposed_cost(distance, makespan)
+
+    def proposed_cost(self, distance, makespan):
+        return distance + (self.num_vehicles - 1) * makespan
 
     @staticmethod
     def make_dataset(*args, **kwargs):

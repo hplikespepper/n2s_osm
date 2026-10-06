@@ -16,7 +16,8 @@ trap 'on_error $LINENO' ERR
 
 echo "[INFO] Starting experiment..."
 
-for graph_size in 50 100; do
+# for graph_size in 50 100; do
+for graph_size in 100; do
 	case "${graph_size}" in
 		50)
 			warm_up=1.5
@@ -32,7 +33,7 @@ for graph_size in 50 100; do
 		100)
 			warm_up=1
 			max_grad_norm=0.3
-			batch_size=256
+			batch_size=600
 			epoch_size=12000
 			lr_model=8e-5
 			lr_critic=2e-5
@@ -50,7 +51,7 @@ for graph_size in 50 100; do
 	echo "[INFO] Params: batch_size=${batch_size}, epoch_size=${epoch_size}, warm_up=${warm_up}, max_grad_norm=${max_grad_norm}, lr_model=${lr_model}, lr_critic=${lr_critic}, val_batch_size=${val_batch_size}, T_max=${T_max}"
 	RUN_START=$(date +%s)
 
-	CUDA_VISIBLE_DEVICES=0,1 python run.py \
+	CUDA_VISIBLE_DEVICES=6,7 python run.py \
 		--problem mvpdtsp \
 		--graph_size "${graph_size}" \
 		--num_vehicles 2 \

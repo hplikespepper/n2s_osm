@@ -38,6 +38,12 @@ def load_latest_results(results_dir="results"):
 def plot_mvpdtsp_solution(coordinates, vehicle_routes,
                           instance_id=0, total_cost=None, save_path=None):
     """Visualize MVPDTSP solution with multiple vehicles."""
+    # MC routes omit the final depot; OR-Tools routes already include it.
+    # Close copies for plotting without modifying the saved/input routes.
+    vehicle_routes = [
+        list(route) + ([route[0]] if route and route[-1] != route[0] else [])
+        for route in vehicle_routes
+    ]
     plt.figure(figsize=(16, 12))
     
     coordinates = np.array(coordinates)
