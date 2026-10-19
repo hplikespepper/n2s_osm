@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 cd "${N2S_DIR}"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5}"
 VAL_SIZE=${VAL_SIZE:-256}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-256}
 T_MAX=${T_MAX:-3000}

@@ -3,7 +3,11 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 cd "${N2S_DIR}"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-8}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-8}"
 MODEL_ROOT="outputs/mvpdtsp_20"
 
 for objective in distance only_makespan; do

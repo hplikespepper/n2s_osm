@@ -19,6 +19,22 @@ bash experiments/fixed_assignment_eval.sh
 bash experiments/search_convergence_eval.sh
 ```
 
+Generate the Fleet Scalability and Search Convergence figures after evaluation:
+
+```bash
+bash experiments/fleet_scalability_plot.sh
+bash experiments/search_convergence_plot.sh
+```
+
+Each plotting script automatically uses the latest run containing its summary
+CSV and writes PNG and PDF files to that run's `figures/` directory. Fleet
+Scalability is rendered as one four-panel figure. Search Convergence preserves
+the full raw-value scale and adds an inset showing percentage improvement after
+step 100 so that long-tail convergence remains visible. Set
+`RUN_DIR` to plot a specific run, or override `PLOT_FORMATS` (`png,pdf,svg`)
+and `PLOT_DPI` as needed. Plotting only reads the existing summaries and never
+runs training or evaluation.
+
 The Fleet evaluation must finish before the two ablation evaluation scripts,
 because its N=20, K=2 proposed-objective result is reused through a manifest.
 Training checkpoints remain under `outputs/`. Evaluation artifacts are written

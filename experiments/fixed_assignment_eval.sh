@@ -8,11 +8,39 @@ VAL_SIZE=${VAL_SIZE:-256}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-256}
 T_MAX=${T_MAX:-3000}
 RUN_DIR=${RUN_DIR:-"result_n2s/Fixed_Assignment/run_$(date +%Y%m%d_%H%M%S)"}
+FULL_MVN2S_RESULT=${FULL_MVN2S_RESULT:-"result_n2s/run_20261005_202445_6h2JWG/n2s_20_mv2/mvpdtsp_results_20261005_202624.json"}
 mkdir -p "${RUN_DIR}/fixed_assignment" "${RUN_DIR}/full_mvn2s"
 
-if ! full_result=$(find_latest_valid_result result_n2s/Fleet_Scalability \
-    '*/K_2/*_results_*.json' 20 2 proposed "${VAL_SIZE}" "${T_MAX}"); then
-    echo "[ERROR] Missing matching Fleet Scalability K=2 result. Run fleet_scalability_eval.sh first." >&2
+full_result="${FULL_MVN2S_RESULT}"
+if [[ ! -f "${full_result}" ]]; then
+    echo "[ERROR] Missing full MVN2S result: ${full_result}" >&2
+    exit 1
+fi
+if ! "${PYTHON}" - "${full_result}" "${VAL_SIZE}" "${T_MAX}" <<'PY'
+import json
+import sys
+
+path, val_size, t_max = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+with open(path) as f:
+    data = json.load(f)
+instances = data.get('instances', [])
+objective = data.get('objective')
+objective_is_proposed = objective == 'proposed' or (
+    objective is None
+    and all(instance.get('makespan_weight') == 1 for instance in instances)
+)
+valid = (
+    data.get('graph_size') == 20
+    and data.get('num_vehicles') == 2
+    and objective_is_proposed
+    and data.get('val_size') == val_size
+    and data.get('T_max') == t_max
+    and len(instances) == val_size
+)
+raise SystemExit(0 if valid else 1)
+PY
+then
+    echo "[ERROR] Full MVN2S result does not match N=20, K=2, objective=proposed, VAL_SIZE=${VAL_SIZE}, T_MAX=${T_MAX}: ${full_result}" >&2
     exit 1
 fi
 

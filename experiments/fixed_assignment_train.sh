@@ -3,7 +3,11 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 cd "${N2S_DIR}"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-8}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-8}"
 MODEL_ROOT="outputs/mvpdtsp_fixed_20"
 PREFIX="mvpdtsp20_mv2_fixed_proposed_log_"
 mkdir -p "${MODEL_ROOT}"

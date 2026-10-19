@@ -18,6 +18,18 @@ from tensorboard_logger import Logger as TbLogger
 import random
 from data.collate import osm_collate_fn, pdp_collate_fn
 
+
+def _atomic_torch_save(obj, path):
+    """Publish a torch archive only after the complete file has been written."""
+    tmp_path = '{}.tmp.{}'.format(path, os.getpid())
+    try:
+        torch.save(obj, tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def gather_tensor_and_concat(tensor):
     gather_t = [torch.ones_like(tensor) for _ in range(dist.get_world_size())]
     dist.all_gather(gather_t, tensor)
@@ -181,7 +193,7 @@ def validate(
     val_score = None
     if distributed and opts.distributed and not use_collectives:
         assert shard_result_path is not None
-        torch.save(
+        _atomic_torch_save(
             {
                 'rank': int(rank),
                 'indices': torch.tensor(local_indices, dtype=torch.long),
