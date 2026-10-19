@@ -143,4 +143,7 @@ datasets/
 results/
 visualizations/
 result*/
-figures/
+
+n2s_osm_marl/boca_raton_imfo/__pycache__
+
+tests

@@ -20,6 +20,8 @@ class PDTSP_OSM(PDTSP):
     PDTSP on real road network using OSM data.
     Inherits from PDTSP and overrides make_dataset and get_costs to support real road networks.
     """
+    IS_OSM = True
+
     NAME = 'pdtsp_osm'
     
     def __init__(self, p_size, init_val_met='random', with_assert=False, osm_place="Boca Raton, Florida, USA", capacity=3):

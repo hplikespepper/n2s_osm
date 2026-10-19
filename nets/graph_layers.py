@@ -556,7 +556,7 @@ class MultiHeadDecoder(nn.Module):
         
         ############# action1 removal
         if TYPE_REMOVAL == 'N2S':
-            action_removal_table = torch.tanh(self.compater_removal(h, rec, visited_order_map, selection_sig, pickup_indices, delivery_indices).squeeze()) * self.range
+            action_removal_table = torch.tanh(self.compater_removal(h, rec, visited_order_map, selection_sig, pickup_indices, delivery_indices).reshape(bs, num_pickups)) * self.range
             if pre_action is not None and pre_action[0,0] > 0:
                 action_removal_table[arange, pre_action[:,0]] = -1e20
             log_ll_removal = F.log_softmax(action_removal_table, dim = -1) if self.training and TYPE_REMOVAL == 'N2S' else None
@@ -595,7 +595,7 @@ class MultiHeadDecoder(nn.Module):
             pos_delivery = pos_pickup + half_pos
         mask_table = problem.get_swap_mask(pos_pickup, visited_order_map, top2, rec).expand(bs, gs, gs).cpu()
         if TYPE_REINSERTION == 'N2S':
-            action_reinsertion_table = torch.tanh(self.compater_reinsertion(h, pos_pickup, pos_delivery, rec, mask_table)) * self.range
+            action_reinsertion_table = torch.tanh(self.compater_reinsertion(h, pos_pickup, pos_delivery, rec, mask_table).reshape(bs, gs, gs)) * self.range
         elif TYPE_REINSERTION == 'random':
             action_reinsertion_table = torch.ones(bs, gs, gs).to(h_em.device)
         else:

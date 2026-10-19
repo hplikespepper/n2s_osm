@@ -111,7 +111,7 @@ class PPO:
         self.opts = opts
         
         # figure out the actor
-        seq_length = size + (opts.num_vehicles if problem_name == 'mvpdtsp' else 1)
+        seq_length = size + (opts.num_vehicles if problem_name in ('mvpdtsp', 'mvpdtsp_osm') else 1)
         self.actor = Actor(
             problem_name = problem_name,
             embedding_dim = opts.embedding_dim,
@@ -258,7 +258,7 @@ class PPO:
 
         record_component_history = (
             getattr(self.opts, 'record_component_history', False)
-            and problem.NAME == 'mvpdtsp'
+            and getattr(problem, 'IS_MULTI_VEHICLE', False)
         )
         component_steps = []
         component_objective = []
@@ -404,7 +404,7 @@ def train(rank, problem, agent, val_dataset, tb_logger):
     # Pre-load training dataset ONCE for pdtsp_osm (instead of every epoch)
     # ========================================================================
     preloaded_training_dataset = None
-    if problem.NAME == 'pdtsp_osm' and opts.train_dataset is not None:
+    if getattr(problem, 'IS_OSM', False) and opts.train_dataset is not None:
         # Load the entire pre-generated dataset once before all epochs
         if rank == 0:
             print('\n' + '='*60)
@@ -420,7 +420,8 @@ def train(rank, problem, agent, val_dataset, tb_logger):
             num_samples=None,  # Load all data from file
             filename=opts.train_dataset,
             osm_place=opts.osm_place,
-            capacity=opts.capacity
+            capacity=opts.capacity,
+            **({"num_vehicles": opts.num_vehicles} if getattr(problem, "IS_MULTI_VEHICLE", False) else {})
         )
         
         if rank == 0:
@@ -434,7 +435,7 @@ def train(rank, problem, agent, val_dataset, tb_logger):
     
     # Setup MVPDTSP epoch metrics logging
     mvp_metrics_path = None
-    record_mvp_metrics = (problem.NAME == 'mvpdtsp')
+    record_mvp_metrics = (getattr(problem, 'IS_MULTI_VEHICLE', False))
     if record_mvp_metrics and rank == 0 and not opts.no_saving:
         mvp_metrics_path = os.path.join(opts.save_dir, 'mvpdtsp_epoch_metrics.jsonl')
 
@@ -469,7 +470,7 @@ def train(rank, problem, agent, val_dataset, tb_logger):
                 dist.barrier()
             
             # prepare training data
-            if problem.NAME == 'pdtsp_osm':
+            if getattr(problem, 'IS_OSM', False):
                 # For OSM-based problem, use pre-loaded dataset or generate online
                 if preloaded_training_dataset is not None:
                     # Use pre-loaded dataset (fast! no loading overhead)
@@ -500,7 +501,8 @@ def train(rank, problem, agent, val_dataset, tb_logger):
                         num_samples=opts.epoch_size,
                         filename=opts.train_dataset,
                         osm_place=opts.osm_place,
-                        capacity=opts.capacity
+                        capacity=opts.capacity,
+                        **({"num_vehicles": opts.num_vehicles} if getattr(problem, "IS_MULTI_VEHICLE", False) else {})
                     )
                     if rank == 0:
                         print(f"📁 Loaded training data from: {opts.train_dataset}")
@@ -511,13 +513,14 @@ def train(rank, problem, agent, val_dataset, tb_logger):
                         num_samples=opts.epoch_size,
                         osm_place=opts.osm_place,
                         capacity=opts.capacity,
+                        **({"num_vehicles": opts.num_vehicles} if getattr(problem, "IS_MULTI_VEHICLE", False) else {}),
                         seed=opts.seed + epoch * 1000 + rank  # Different seed per rank and epoch
                     )
                     if rank == 0:
                         print(f"⚠️  Warning: Generating training data online (slow). Consider using --train_dataset for faster training.")
                 collate_fn = osm_collate_fn
             else:
-                if problem.NAME == 'mvpdtsp':
+                if getattr(problem, 'IS_MULTI_VEHICLE', False):
                     training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size, num_vehicles=opts.num_vehicles)
                 else:
                     training_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size)
