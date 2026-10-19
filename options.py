@@ -8,7 +8,7 @@ def get_options(args=None):
     parser = argparse.ArgumentParser(description="Neural Neighborhood Search")
 
     # overall settings
-    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm','mvpdtsp','mvpdtsp_fixed'], help="The targeted problem to solve, default 'pdp'")
+    parser.add_argument('--problem', default='pdtsp', choices = ['pdtsp','pdtspl','pdtsp_osm','mvpdtsp','mvpdtsp_fixed','mvpdtsp_osm'], help="The targeted problem to solve, default 'pdp'")
     parser.add_argument('--graph_size', type=int, default=20, help="T number of customers in the targeted problem (graph size)")
     parser.add_argument('--init_val_met', choices = ['greedy', 'random'], default = 'random', help='method to generate initial solutions for inference')
     parser.add_argument('--no_cuda', action='store_true', help='disable GPUs')
@@ -84,9 +84,9 @@ def get_options(args=None):
     
 
     # newly added parameters for OSM
-    parser.add_argument('--osm_place', type=str, default='Boca Raton, Florida, USA', help='OSM place string for pdtsp_osm')
+    parser.add_argument('--osm_place', type=str, default='Boca Raton, Florida, USA', help='OSM place string for OSM problems')
     parser.add_argument('--capacity', type=int, default=3, help='Vehicle capacity for PDP on real map')
-    parser.add_argument('--train_dataset', type=str, default=None, help='Pre-generated training dataset file path (for pdtsp_osm only)')
+    parser.add_argument('--train_dataset', type=str, default=None, help='Pre-generated training dataset file path (for OSM problems)')
     parser.add_argument('--num_vehicles', type=int, default=2, help='number of vehicles for multi-vehicle PDTSP')
 
     opts = parser.parse_args(args)
@@ -115,7 +115,7 @@ def get_options(args=None):
     assert opts.val_batch_size > 0, "val_batch_size must be positive"
     assert opts.epoch_size > 0, "epoch_size must be positive"
     assert opts.graph_size > 0, "graph_size must be positive"
-    if opts.problem in ('mvpdtsp', 'mvpdtsp_fixed'):
+    if opts.problem in ('mvpdtsp', 'mvpdtsp_fixed', 'mvpdtsp_osm'):
         assert opts.graph_size % 2 == 0, "For mvpdtsp, graph_size must be even (pickup+delivery nodes)."
         assert opts.num_vehicles >= 1, "num_vehicles must be at least 1."
     assert opts.history_interval > 0, "history_interval must be positive"

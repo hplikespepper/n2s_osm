@@ -18,10 +18,29 @@ from tensorboard_logger import Logger as TbLogger
 import random
 from data.collate import osm_collate_fn, pdp_collate_fn
 
+def _atomic_torch_save(obj, path):
+    """Publish a torch archive only after the complete file has been written."""
+    tmp_path = '{}.tmp.{}'.format(path, os.getpid())
+    try:
+        torch.save(obj, tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+
 def gather_tensor_and_concat(tensor):
     gather_t = [torch.ones_like(tensor) for _ in range(dist.get_world_size())]
     dist.all_gather(gather_t, tensor)
     return torch.cat(gather_t)
+
+def unique_sorted_positions(sorted_indices):
+    """Select one row per sample after sorting DistributedSampler's padded indices."""
+    keep = torch.ones_like(sorted_indices, dtype=torch.bool)
+    keep[1:] = sorted_indices[1:] != sorted_indices[:-1]
+    return keep.nonzero(as_tuple=False).flatten()
+
 
 def validate(
     rank,
@@ -49,18 +68,20 @@ def validate(
         random.seed(opts.seed)
     agent.eval()
     
+    dataset_path = val_dataset
     # Create validation dataset with problem-specific parameters
-    if problem.NAME == 'pdtsp_osm':
+    if getattr(problem, 'IS_OSM', False):
         val_dataset = problem.make_dataset(
             size=opts.graph_size,
             num_samples=opts.val_size,
             filename=val_dataset,
             osm_place=opts.osm_place,
-            capacity=opts.capacity
+            capacity=opts.capacity,
+            **({"num_vehicles": opts.num_vehicles} if getattr(problem, "IS_MULTI_VEHICLE", False) else {})
         )
         collate_fn = osm_collate_fn
     else:
-        if problem.NAME == 'mvpdtsp':
+        if getattr(problem, 'IS_MULTI_VEHICLE', False):
             val_dataset = problem.make_dataset(
                 size=opts.graph_size,
                 num_samples=opts.val_size,
@@ -128,6 +149,8 @@ def validate(
     initial_solutions = []
     initial_costs = []
     original_coords = []  # Store original coordinates (not augmented)
+    original_dist = []
+    road_multi = getattr(problem, "IS_OSM", False) and getattr(problem, "IS_MULTI_VEHICLE", False)
     solve_times = []  # Per-instance solve time
     component_histories = []
     component_steps = None
@@ -137,6 +160,8 @@ def validate(
         disable=opts.no_progress_bar or (opts.distributed and rank != 0),
         bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}',
     ):
+        if road_multi:
+            original_dist.append(batch["dist"].detach().clone())
         batch_start = time.time()
         (bv_, cost_hist_, best_hist_, r_, solutions_, init_solutions_, init_costs_,
          coords_, component_history_) = agent.rollout(problem,
@@ -169,6 +194,7 @@ def validate(
     initial_solutions = torch.cat(initial_solutions, 0)
     initial_costs = torch.cat(initial_costs, 0)
     original_coords = torch.cat(original_coords, 0)  # Concatenate original coordinates
+    original_dist = torch.cat(original_dist, 0) if road_multi else None
     component_history = None
     if component_histories:
         component_history = {
@@ -181,7 +207,7 @@ def validate(
     val_score = None
     if distributed and opts.distributed and not use_collectives:
         assert shard_result_path is not None
-        torch.save(
+        _atomic_torch_save(
             {
                 'rank': int(rank),
                 'indices': torch.tensor(local_indices, dtype=torch.long),
@@ -194,6 +220,7 @@ def validate(
                 'initial_solutions': initial_solutions.detach().cpu(),
                 'initial_costs': initial_costs.detach().cpu(),
                 'original_coords': original_coords.detach().cpu(),
+                'original_dist': original_dist.detach().cpu() if road_multi else None,
                 'solve_times': torch.tensor(solve_times, dtype=torch.float32),
                 'component_history': None if component_history is None else {
                     'steps': component_history['steps'],
@@ -226,6 +253,8 @@ def validate(
         best_solutions = torch.cat([result['best_solutions'] for result in shard_results], 0)[sort_order]
         initial_costs = torch.cat([result['initial_costs'] for result in shard_results], 0)[sort_order]
         original_coords = torch.cat([result['original_coords'] for result in shard_results], 0)[sort_order]
+        if road_multi:
+            original_dist = torch.cat([result['original_dist'] for result in shard_results], 0)[sort_order]
         solve_times_tensor = torch.cat([result['solve_times'] for result in shard_results], 0)[sort_order]
         solve_times = solve_times_tensor.tolist()
         if shard_results[0].get('component_history') is not None:
@@ -263,6 +292,8 @@ def validate(
         best_solutions = gather_tensor_and_concat(best_solutions.contiguous())
         initial_costs = gather_tensor_and_concat(initial_costs.contiguous())
         original_coords = gather_tensor_and_concat(original_coords.contiguous())
+        if road_multi:
+            original_dist = gather_tensor_and_concat(original_dist.to(opts.device).contiguous())
         if component_history is not None:
             gathered_component_history = {'steps': component_history['steps']}
             for key in ('objective', 'distance', 'makespan'):
@@ -288,6 +319,8 @@ def validate(
         best_solutions = best_solutions[sort_order]
         initial_costs = initial_costs[sort_order]
         original_coords = original_coords[sort_order]
+        if road_multi:
+            original_dist = original_dist[sort_order]
         if component_history is not None:
             for key in ('objective', 'distance', 'makespan'):
                 component_history[key] = component_history[key][sort_order]
@@ -303,14 +336,41 @@ def validate(
         search_history = best_hist
         reward = r
         
+    # DistributedSampler pads with repeated dataset indices. Keep all result
+    # tensors and road matrices aligned while removing padded rows for OSM MVPDP.
+    if road_multi and distributed and opts.distributed:
+        ordered_indices = all_indices[sort_order]
+        selected = unique_sorted_positions(ordered_indices)
+        initial_cost = initial_cost[selected.to(initial_cost.device)]
+        bv = bv[selected.to(bv.device)]
+        costs_history = costs_history[selected.to(costs_history.device)]
+        search_history = search_history[selected.to(search_history.device)]
+        reward = reward[selected.to(reward.device)]
+        initial_solutions = initial_solutions[selected.to(initial_solutions.device)]
+        best_solutions = best_solutions[selected.to(best_solutions.device)]
+        initial_costs = initial_costs[selected.to(initial_costs.device)]
+        original_coords = original_coords[selected.to(original_coords.device)]
+        original_dist = original_dist[selected.to(original_dist.device)]
+        solve_times = [solve_times[i] for i in selected.tolist()]
+        if component_history is not None:
+            for key in ('objective', 'distance', 'makespan'):
+                component_history[key] = component_history[key][selected.to(component_history[key].device)]
+        val_score = bv.mean().item() if rank == 0 else None
+
+    def cost_batch(coords, row=None):
+        result = {'coordinates': coords.detach().cpu()}
+        if road_multi:
+            result['dist'] = (original_dist if row is None else original_dist[row:row + 1]).detach().cpu()
+        return result
+
     init_distance = None
     init_makespan = None
     best_distance = None
     best_makespan = None
-    if problem.NAME == 'mvpdtsp':
+    if getattr(problem, 'IS_MULTI_VEHICLE', False):
         # Use original coordinates (not augmented) for consistency with saved results
         # Data augmentation (rotate/flip) preserves distances, so costs should be equivalent
-        batch_cost = {'coordinates': original_coords.detach().cpu()}
+        batch_cost = cost_batch(original_coords)
         best_distance, best_makespan = problem.compute_cost_components(batch_cost, best_solutions.detach().cpu().long())
         init_distance, init_makespan = problem.compute_cost_components(batch_cost, initial_solutions.detach().cpu().long())
         
@@ -388,10 +448,16 @@ def validate(
             "val_size": opts.val_size,
             "instances": []
         }
-        if problem.NAME == 'mvpdtsp':
+        if getattr(problem, 'IS_MULTI_VEHICLE', False):
             results_data["num_vehicles"] = opts.num_vehicles
             results_data["objective"] = problem.objective
             results_data["makespan_weight"] = problem.makespan_weight
+        if road_multi:
+            results_data["distance_source"] = "osm_directed_shortest_path"
+            results_data["makespan_unit"] = "distance"
+            results_data["source_dataset"] = str(os.path.abspath(dataset_path))
+            results_data["original_total_nodes"] = opts.graph_size + 1
+            results_data["adapted_total_nodes"] = opts.graph_size + opts.num_vehicles
         if component_history is not None:
             results_data["component_history_steps"] = component_history['steps']
 
@@ -404,10 +470,10 @@ def validate(
         init_dist_costs = init_distance
         init_makespan_costs = init_makespan
         best_vehicle_costs = None
-        if problem.NAME == 'mvpdtsp':
+        if getattr(problem, 'IS_MULTI_VEHICLE', False):
             # Get individual vehicle route lengths for detailed reporting
             # Use original coordinates to match the saved coordinate data
-            batch_cost = {'coordinates': original_coords.cpu()}
+            batch_cost = cost_batch(original_coords)
             best_vehicle_costs = problem._get_route_lengths(batch_cost, best_solutions.cpu().long())
 
         def decode_vehicle_routes(rec, num_vehicles):
@@ -443,11 +509,11 @@ def validate(
             init_cost = initial_costs[i].item()
             coordinates = torch.as_tensor(coords_list[i]).cpu().numpy().tolist()
 
-            if problem.NAME == 'mvpdtsp':
+            if getattr(problem, 'IS_MULTI_VEHICLE', False):
                 vehicle_routes = decode_vehicle_routes(solution, opts.num_vehicles)
                 rec_tensor = solution.detach().cpu().long().unsqueeze(0)
                 coords_tensor = torch.as_tensor(coordinates).float().unsqueeze(0)
-                batch_cost = {"coordinates": coords_tensor}
+                batch_cost = cost_batch(coords_tensor, i)
                 inst_distance, inst_makespan = problem.compute_cost_components(batch_cost, rec_tensor)
                 inst_vehicle_costs = problem._get_route_lengths(batch_cost, rec_tensor)
                 inst_distance_val = inst_distance.item()
@@ -504,13 +570,21 @@ def validate(
                 if i < len(solve_times):
                     instance_data["solve_time"] = solve_times[i]
 
+            if road_multi:
+                instance_data.pop("best_vehicle_completion_times", None)
+                instance_data["dataset_index"] = val_dataset.offset + i
+                instance_data["original_total_nodes"] = opts.graph_size + 1
+                instance_data["adapted_total_nodes"] = len(solution)
+                instance_data["initial_cost"] = init_cost
+                instance_data["initial_distance_cost"] = init_dist_costs[i].item()
+                instance_data["initial_makespan_cost"] = init_makespan_costs[i].item()
             results_data["instances"].append(instance_data)
 
             if print_solution:
                 print(f"\nInstance {i+1}:")
                 print(f"  Initial Cost: {init_cost:.6f}")
                 print(f"  Best Cost: {cost:.6f}")
-                if problem.NAME == 'mvpdtsp':
+                if getattr(problem, 'IS_MULTI_VEHICLE', False):
                     print(f"  Initial Rec: {init_solution.cpu().numpy().tolist()}")
                     print(f"  Final Rec: {solution.cpu().numpy().tolist()}")
                 else:

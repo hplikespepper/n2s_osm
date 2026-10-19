@@ -6,6 +6,9 @@ import os
 
 class MVPDTSP(object):
 
+    IS_MULTI_VEHICLE = True
+    IS_OSM = False
+
     NAME = 'mvpdtsp'  # Multi-Vehicle Pickup and Delivery TSP
 
     OBJECTIVES = ('distance', 'only_makespan', 'proposed')

@@ -92,6 +92,9 @@ python analysis_figure.py --result_file ./outputs/mvpdtsp_20/mvpdtsp20_makespan_
 02/08/2026
 # 对比试验使用ortools:
 	- (存在一个问题 ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts. tensorboard 2.11.0 requires protobuf<4,>=3.9.2, but you have protobuf 5.29.6 which is incompatible. 安装ortools会导致tensorboard无法使用，理由是protobuf冲突)
+
+	使用n2s： python -m pip install "protobuf==3.20.3"
+	使用ortools: 在安装以便ortools,会自动更新protobuf，或者python -m pip install "protobuf==3.9.2"
 	
 	多车：
 	python ortools_baseline.py --val_size 256 --time_limit 15
@@ -161,3 +164,6 @@ python analysis_json.py results/mvpdtsp_results_mc_20260309_150953.json
 	mv_ortools.sh为轻量版实验脚本
 	mv_ortools_full.sh为对100节点额外进行的完整版算子实验，特别的，time_limit为900，需要的时间很长
 
+#	10/06/2026
+	实现接入osm地图的mvpdp问题，也更新了结果可视化脚本（n2s_osm_marl/vis_osm_real.py），可使用真实的osm地图作为底图。
+	bash n2s_osm_marl/train_mvpdtsp_osm_20_mv2.sh

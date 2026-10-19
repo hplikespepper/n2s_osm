@@ -11,6 +11,7 @@ from problems.problem_pdtsp import PDTSP
 from problems.problem_pdtspl import PDTSPL
 from problems.problem_pdtsp_osm import PDTSP_OSM
 from problems.problem_mvpdtsp import MVPDTSP
+from problems.problem_mvpdtsp_osm import MVPDTSP_OSM
 from problems.problem_mvpdtsp_fixed import MVPDTSPFixedAssignment
 from agent.ppo import PPO
 
@@ -27,6 +28,7 @@ def load_problem(name):
         'pdtspl': PDTSPL,
         'pdtsp_osm': PDTSP_OSM,  # 新增
         'mvpdtsp': MVPDTSP,
+        'mvpdtsp_osm': MVPDTSP_OSM,
         'mvpdtsp_fixed': MVPDTSPFixedAssignment,
     }.get(name, None)
     assert problem is not None, "Currently unsupported problem: {}!".format(name)
@@ -67,14 +69,15 @@ def run(opts):
                                 with_assert = opts.use_assert,
                                 osm_place = opts.osm_place,
                                 capacity = opts.capacity)
-    elif opts.problem in ('mvpdtsp', 'mvpdtsp_fixed'):
+    elif opts.problem in ('mvpdtsp', 'mvpdtsp_fixed', 'mvpdtsp_osm'):
         problem = load_problem(opts.problem)(
                                 p_size = opts.graph_size,
                                 init_val_met = opts.init_val_met,
                                 with_assert = opts.use_assert,
                                 num_vehicles = opts.num_vehicles,
                                 capacity = opts.capacity,
-                                objective = opts.objective)
+                                objective = opts.objective,
+                                **({"osm_place": opts.osm_place} if opts.problem == "mvpdtsp_osm" else {}))
     else:
         # For standard problems
         problem = load_problem(opts.problem)(

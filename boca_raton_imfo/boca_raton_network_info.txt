@@ -1,0 +1,824 @@
+Boca Raton 训练/评估使用的最大强连通驾驶路网统计
+========================================================================
+地点: Boca Raton, Florida, USA
+报告生成时间（UTC）: 2026-10-15T21:35:41.677947+00:00
+OSMnx: 1.9.4; NetworkX: 3.1
+统计对象: 与训练构图相同规则筛选出的最大强连通分量。
+筛选规则: 最大弱连通分量 -> 其中最大强连通分量。
+以下全部节点、边、方向、长度和道路属性统计仅针对筛选后的图。
+图类型: 有向多重图 MultiDiGraph; network_type=drive; simplify=True。
+节点是拓扑简化后保留的交叉口/道路端点等，不是 OSM 原始形状点总数。
+有向边按可行驶方向计数；双向道路通常对应两条反向有向边。
+道路段使用 OSMnx to_undirected 按 OSM way/几何去除反向重复；平行独立道路仍保留。
+单/双向按 OSMnx oneway 属性统计，不仅依据是否存在任意反向边。
+长度指标保留缓存简化图的原始 length，不重复调用 add_edge_lengths。
+本报告未修改训练图或数据；历史 pickle 的原始图版本需以其配套快照确认。
+缓存可能来自历史 OSM 响应；报告时间不是地图数据更新时间。
+经度范围: -80.15553380 至 -80.06651400
+纬度范围: 26.32159360 至 26.42416630
+
+最大强连通分量统计
+------------------------------------------------------------------------
+节点总数: 3077
+有向边总数（MultiDiGraph arcs，含平行边和自环）: 7286
+  单向道路对应有向边: 1926
+  双向道路对应有向边: 5360
+  单/双向混合属性边: 0
+  方向属性未知边: 0
+去除反向重复后的道路段总数: 4606
+  单向道路段: 1926
+  双向道路段: 2680
+  混合方向道路段: 0
+  未知方向道路段: 0
+自环有向边数: 30
+强连通分量数: 1
+弱连通分量数: 1
+有向图密度: 0.00076980
+道路段总长度（反向去重，米）: 650243.727
+有向边总长度（双向道路通常重复计入，米）: 1026921.103
+道路段长度最小/平均/中位数/最大（米）: 1.468 / 141.173 / 94.964 / 3556.471
+节点有向总度最小/平均/最大: 2 / 4.7358 / 8
+零入度节点数: 0
+零出度节点数: 0
+按 highway 属性统计道路段（多值边每个属性值各计一次）:
+  residential: 2637
+  tertiary: 711
+  secondary: 451
+  primary: 412
+  unclassified: 163
+  primary_link: 72
+  motorway_link: 55
+  secondary_link: 47
+  tertiary_link: 40
+  motorway: 19
+按 name 属性统计道路段（多值边每个属性值各计一次）:
+  (未标注): 380
+  Federal Highway: 127
+  Yamato Road: 78
+  Glades Road: 72
+  Saint Andrews Boulevard: 68
+  North Federal Highway: 67
+  North Dixie Highway: 60
+  Northeast 5th Avenue: 56
+  West Camino Real: 55
+  North Military Trail: 55
+  West Palmetto Park Road: 54
+  Clint Moore Road: 54
+  Northwest Spanish River Boulevard: 48
+  Northwest 4th Avenue: 43
+  Northwest 2nd Avenue: 39
+  Southwest 18th Street: 37
+  Northwest 13th Street: 37
+  Northwest Boca Raton Boulevard: 37
+  Camino Gardens Boulevard: 35
+  Northeast 4th Avenue: 33
+  Jog Road: 33
+  Northwest 3rd Avenue: 32
+  Northwest 20th Street: 31
+  Northwest 5th Avenue: 30
+  Coach House Circle: 29
+  Congress Avenue: 29
+  East Camino Real: 27
+  Southwest 12th Avenue: 25
+  Northeast 2nd Street: 25
+  South Dixie Highway: 24
+  Northeast Spanish River Boulevard: 24
+  East Palmetto Park Road: 24
+  Northwest 7th Street: 23
+  Northeast Mizner Boulevard: 23
+  FAU Boulevard: 22
+  Broken Sound Parkway Northwest: 21
+  Southwest 2nd Avenue: 20
+  Southwest 4th Avenue: 19
+  Northwest 7th Avenue: 19
+  West Royal Palm Road: 18
+  Pine Haven Circle: 18
+  Northeast 7th Avenue: 18
+  Northeast 20th Street: 18
+  Southwest 15th Street: 17
+  Northwest 32nd Street: 17
+  Northwest 4th Street: 17
+  Northeast 2nd Avenue: 16
+  Southwest 2nd Street: 15
+  East University Drive: 15
+  Northwest 12th Avenue: 15
+  Northwest 46th Street: 15
+  Northwest 27th Avenue: 15
+  Northwest 8th Street: 15
+  Northwest Broken Sound Boulevard: 15
+  Southwest 17th Street: 14
+  Southwest 9th Avenue: 14
+  Northeast 6th Drive: 14
+  Northwest 51st Street: 14
+  Potomac Road: 14
+  Woodfield Boulevard: 14
+  Northwest 67th Street: 14
+  North Ocean Boulevard: 14
+  Jeffery Street: 14
+  Butts Road: 14
+  Southwest 16th Street: 13
+  Southwest 20th Street: 13
+  Southwest 9th Street: 13
+  Southwest 7th Avenue: 13
+  Spanish River Road: 13
+  Southwest 13th Street: 13
+  Northeast 32nd Street: 13
+  East Country Club Boulevard: 13
+  Northeast 3rd Avenue: 13
+  Town Center Road: 12
+  Southwest 15th Avenue: 12
+  Juana Road: 12
+  Banyan Road: 12
+  Northwest 24th Way: 12
+  Northwest 15th Avenue: 12
+  Northwest 26th Avenue: 12
+  Northwest 6th Avenue: 12
+  Northwest 35th Street: 12
+  Broken Sound Boulevard Northwest: 12
+  Northwest 8th Avenue: 12
+  Northwest 15th Street: 11
+  Southwest 1st Street: 11
+  Southwest 14th Drive: 11
+  Southwest 4th Street: 11
+  Southwest 8th Avenue: 11
+  Paloma Avenue: 11
+  Banyan Boulevard Circle Northwest: 11
+  South Ocean Boulevard: 11
+  Technology Way: 11
+  Northwest 24th Terrace: 11
+  Southeast Mizner Boulevard: 11
+  Northwest 25th Way: 11
+  Northwest 1st Avenue: 11
+  East Boca Raton Road: 11
+  Northwest 4th Court: 10
+  Gonzalo Road: 10
+  Fairway Trail: 10
+  Southwest 18th Avenue: 10
+  Southwest 16th Avenue: 10
+  Southwest 3rd Avenue: 10
+  Southwest 5th Street: 10
+  Southwest 14th Street: 10
+  Southwest 6th Avenue: 10
+  Southwest 11th Avenue: 10
+  Southwest 8th Terrace: 10
+  Northwest 29th Street: 10
+  South Verde Trail: 10
+  Verde Trail: 10
+  Isabel Road West: 10
+  Northwest 24th Avenue: 10
+  Northeast 4th Way: 10
+  Northeast 28th Street: 10
+  Park of Commerce Boulevard: 10
+  Northeast 4th Street: 10
+  Lennox Drive: 10
+  West Hidden Valley Boulevard: 10
+  West University Drive: 10
+  Northwest Library Commons Drive: 10
+  Southwest 8th Street: 9
+  Southwest 19th Street: 9
+  Southwest 21st Street: 9
+  West Country Club Boulevard: 9
+  Southwest 3rd Street: 9
+  Southwest 13th Avenue: 9
+  Southwest 14th Avenue: 9
+  Northwest 44th Street: 9
+  Northwest 36th Street: 9
+  Burning Tree Lane: 9
+  Northwest 2nd Court: 9
+  Hermoso Road: 9
+  Northwest 30th Street: 9
+  Northwest 9th Court: 9
+  Northwest 6th Street: 9
+  Northwest 9th Avenue: 9
+  Isabel Road East: 9
+  Northwest 82nd Boulevard: 9
+  South Grande Drive: 9
+  East Royal Palm Road: 9
+  Hospitality Way: 9
+  Northwest 6th Way: 9
+  Coquina Way: 9
+  Cypress Way: 8
+  Southwest 7th Street: 8
+  Southwest 11th Street: 8
+  Southwest 12th Terrace: 8
+  Southwest 5th Avenue: 8
+  Northwest 31st Street: 8
+  Town Lakes Drive: 8
+  Las Casa Road: 8
+  Northwest 66th Drive: 8
+  Northwest 5th Street: 8
+  Northwest 10th Court: 8
+  Northwest 26th Court: 8
+  Northwest 28th Avenue: 8
+  Northwest 11th Street: 8
+  Northeast 6th Street: 8
+  Northwest 10th Street: 8
+  Northwest 38th Street: 8
+  Pinehurst Lane: 8
+  Denny Court: 8
+  Northeast 5th Street: 8
+  Northeast 11th Street: 8
+  North University Drive: 8
+  Southwest 10th Street: 7
+  Indian River Street: 7
+  Southwest 6th Terrace: 7
+  Northeast 25th Terrace: 7
+  Airport Road: 7
+  Southwest 1st Avenue: 7
+  Cardinal Avenue: 7
+  Via Cabana: 7
+  Coconut Road: 7
+  Northwest 23rd Court: 7
+  Southeast 1st Avenue: 7
+  Northwest 4th Diagonal: 7
+  Northwest 28th Street: 7
+  Northeast 38th Street: 7
+  Northwest 9th Street: 7
+  Northeast Wave Crest Court: 7
+  Nottingham Road: 7
+  Saint Albans Drive: 7
+  Southwest 12th Street: 7
+  Northwest Executive Center Drive: 7
+  Bethel Boulevard: 7
+  Via Poinciana Street: 7
+  Northwest 14th Street: 6
+  Northwest 82nd Street: 6
+  Northwest 19th Street: 6
+  Southwest 21st Lane: 6
+  Northeast 5th Drive: 6
+  Osceola Drive: 6
+  Northwest 39th Street: 6
+  Saint Andrews Grand Circle: 6
+  Northwest 53rd Street: 6
+  Montezuma Road: 6
+  Noche Triste Road: 6
+  Southeast 1st Street: 6
+  Northwest 42nd Street: 6
+  Southwest 21st Avenue: 6
+  Estada Lane: 6
+  Northwest 2nd Terrace: 6
+  Pond Apple Road: 6
+  Peninsula Corp Circle: 6
+  Peninsula Corp Drive: 6
+  North Grande Drive: 6
+  Northeast 8th Street: 6
+  Northeast 36th Street: 6
+  Glouchester Street: 6
+  Northwest 29th Drive: 6
+  Northeast 4th Court: 6
+  Southwest 13th Place: 6
+  T-Rex Avenue: 6
+  Camino Lakes Circle: 6
+  Northeast 3rd Street: 6
+  Northeast 15th Terrace: 6
+  Powerline Road: 6
+  El Paseo Road: 6
+  Buckhead Circle: 6
+  Serena Lane: 6
+  Northwest 17th Avenue: 6
+  Palm Beach State College Drive: 6
+  Northwest 83rd Street: 6
+  Northwest 16th Street: 5
+  Southwest 11th Terrace: 5
+  Apple Tree Lane: 5
+  Northeast 7th Drive: 5
+  Southwest 9th Terrace: 5
+  Northeast 26th Street: 5
+  Northeast 10th Street: 5
+  Northeast 1st Avenue: 5
+  Northwest 37th Street: 5
+  North Verde Trail: 5
+  Las Flores Drive: 5
+  Boca Pines Trail: 5
+  Northwest 23rd Terrace: 5
+  Southeast 3rd Street: 5
+  Southeast 5th Street: 5
+  Royal Palm Way: 5
+  Timbercreek Circle Northwest: 5
+  Addison Avenue: 5
+  Palm Avenue: 5
+  Northwest 45th Street: 5
+  Tamarind Way: 5
+  Northeast 24th Street: 5
+  Northeast 37th Street: 5
+  Northeast 44th Street: 5
+  Newcastle Street: 5
+  Northeast 74th Street: 5
+  Fairfield Drive: 5
+  Northwest 50th Place: 5
+  Northwest 34th Street: 5
+  Northeast Olive Way: 5
+  Northwest 41st Street: 5
+  Equestrian Drive: 5
+  Sabal Gardens Lane: 5
+  Northwest 23rd Way: 5
+  Oregon Lane: 5
+  Northeast 3rd Way: 5
+  Northwest 56th Street: 5
+  Northwest Library Commons Way: 5
+  Northeast 23rd Street: 5
+  Northwest 8th Way: 5
+  Northwest 50th Street: 5
+  Northwest 14th Avenue: 4
+  Northwest 13th Avenue: 4
+  North Conference Drive: 4
+  East Conference Drive: 4
+  Walnut Terrace: 4
+  Mulberry Way: 4
+  Del Rio Boulevard: 4
+  Oak Circle: 4
+  Northwest 30th Road: 4
+  Northwest 15th Court: 4
+  Northwest 16th Avenue: 4
+  Northeast 76th Street: 4
+  Northeast 8th Court: 4
+  Northwest 26th Street: 4
+  Northwest 70th Street: 4
+  Northeast Spanish Trail: 4
+  Northwest 5th Terrace: 4
+  Northwest 3rd Terrace: 4
+  Sweet Maple Lane: 4
+  Northwest 28th Terrace: 4
+  Northwest 27th Terrace: 4
+  Northwest 25th Terrace: 4
+  Northeast 42nd Street: 4
+  Northeast 46th Street: 4
+  Enfield Street: 4
+  East Hidden Valley Boulevard: 4
+  Northwest 3rd Court: 4
+  Northwest 22nd Street: 4
+  Northeast Spanish Court: 4
+  Saint James Drive: 4
+  Pagosa Court: 4
+  West Telecom Drive: 4
+  Northwest 28th Way: 4
+  Northwest 6th Drive: 4
+  Northwest Corporate Boulevard: 4
+  Southwest 11th Place: 4
+  North Country Club Boulevard: 4
+  Northwest 49th Street: 4
+  High Street: 4
+  Canterbury Drive: 4
+  Northeast 12th Street: 4
+  Northeast 14th Street: 4
+  Northwest 29th Avenue: 4
+  Via Tierra: 4
+  Southwest 13th Drive: 4
+  Palm Beach Avenue: 4
+  Northwest 26th Way: 4
+  Northwest 16th Terrace: 4
+  West Plaza Real: 4
+  Northwest Beacon Square Boulevard: 4
+  Northwest 65th Street: 4
+  Northeast 69th Circle: 4
+  Northwest 40th Drive: 4
+  Northwest 1st Court: 3
+  Southwest 11th Court: 3
+  Southwest 1st Way: 3
+  Giralda Circle: 3
+  13th Way: 3
+  Northeast 35th Street: 3
+  Southwest 10th Avenue: 3
+  Southwest 6th Court: 3
+  Southwest 7th Terrace: 3
+  Ponce de Leon Road: 3
+  De Soto Road: 3
+  Northwest 27th Street: 3
+  Northwest 23rd Drive: 3
+  Southwest Cedar Terrace: 3
+  Banyan Trail: 3
+  Northwest 55th Street: 3
+  Northwest 48th Street: 3
+  Del Luna Drive: 3
+  Northwest 42nd Drive: 3
+  Northwest 29th Road: 3
+  Northeast 8th Avenue: 3
+  Northwest 22nd Avenue: 3
+  Southeast 14th Street: 3
+  Southwest 4th Court: 3
+  West Saint Cloud Lane: 3
+  Northwest 69th Street: 3
+  Southeast Spanish Trail: 3
+  Entrada Place: 3
+  West Rogers Circle: 3
+  East Rogers Circle: 3
+  Southeast 17th Street: 3
+  Northeast 29th Street: 3
+  Northeast 47th Street: 3
+  Boca Marina Court: 3
+  Kingsbridge Street: 3
+  Forsyth Street: 3
+  Dover Street: 3
+  Coventry Street: 3
+  Berkley Street: 3
+  Northwest 3rd Street: 3
+  Northwest 23rd Street: 3
+  Southeast Wave Crest Way: 3
+  Northeast Wave Crest Way: 3
+  Mohigan Circle: 3
+  Northwest 35th Lane: 3
+  Marble Way: 3
+  Forest Hills Lane: 3
+  Polo Circle: 3
+  Sapphire Valley: 3
+  South Conference Drive: 3
+  Town Center Circle: 3
+  Holly Lane: 3
+  Northwest 25th Street: 3
+  Southwest 15th Drive: 3
+  South Country Club Boulevard: 3
+  Country Club Boulevard: 3
+  Quintana Place: 3
+  Deerhurst Cresent Circle: 3
+  Northwest 64th Street: 3
+  Northeast 34th Street: 3
+  Northeast 33rd Street: 3
+  Northeast 7th Street: 3
+  Northeast 23rd Way: 3
+  Northeast 30th Street: 3
+  Northwest 10th Avenue: 3
+  Northwest 6th Terrace: 3
+  Texas Trail: 3
+  Park Place Circle: 3
+  Marina del Mar: 3
+  East Plaza Real: 3
+  Town Colony Drive: 3
+  Northwest 16th Court: 3
+  Northwest 83rd Lane: 3
+  Northwest 82nd Lane: 3
+  Broken Sound Way: 3
+  Arts Avenue: 3
+  Saint Lucie South: 3
+  Southeast 13th Street: 3
+  Plaza Real South: 3
+  Northwest 18th Avenue: 3
+  Northwest 12th Way: 2
+  Southeast 8th Street: 2
+  Butternut Terrace: 2
+  Elderberry Way: 2
+  Hickory Terrace: 2
+  Northwest 13th Court: 2
+  Northwest Executive Center Circle: 2
+  Pepper Ridge Terrace: 2
+  Peachtree Lane: 2
+  Southwest 10th Drive: 2
+  Oleander Street: 2
+  Hibiscus Street: 2
+  Northwest 7th Court: 2
+  Alamanda Street: 2
+  Seminole Drive: 2
+  Sevilla Drive: 2
+  Mohawk Lane: 2
+  1st Street Northwest: 2
+  Via Tierra Drive: 2
+  Banyan Boulevard: 2
+  Northwest 52nd Terrace: 2
+  East Telecom Drive: 2
+  Southwest 17th Court: 2
+  Aloma Lane: 2
+  Caliente Lane: 2
+  Saint Charles Way: 2
+  Redwood Lane: 2
+  Northeast 72nd Street: 2
+  Northeast 8th Way: 2
+  Northeast 27th Circle: 2
+  Knob Hill Boulevard: 2
+  Camino Gardens Lane: 2
+  Via Valencia Drive: 2
+  Belleza Lane: 2
+  Via Laguna Lane: 2
+  Park Drive West: 2
+  Northeast 8th Drive: 2
+  Northeast 70th Street: 2
+  Sycamore Terrace: 2
+  Sugar Plum Drive: 2
+  Appleby Street: 2
+  Crawford Boulevard: 2
+  Willow Springs Drive: 2
+  Southeast 2nd Street: 2
+  Elm Tree Lane: 2
+  Lago Mar Lane: 2
+  Northeast 43rd Street: 2
+  Northeast 45th Street: 2
+  Manchester Street: 2
+  Lancaster Street: 2
+  Ipswich Street: 2
+  Hastings Street: 2
+  Fairfield Lane: 2
+  Northwest 11th Avenue: 2
+  Northwest 2nd Street: 2
+  Commercial Trail: 2
+  Renaissance Way: 2
+  Northwest 15th Vista: 2
+  Northwest 35th Place: 2
+  Northwest 40th Street: 2
+  Sea Island Lane: 2
+  Fox Landing Drive: 2
+  Tudor Drive: 2
+  Sharon Street: 2
+  Northeast 2nd Court: 2
+  Southwest 7th Court: 2
+  Northwest 1st Street: 2
+  Northwest 19th Way: 2
+  Southwest 13th Terrace: 2
+  Altura Place: 2
+  Azalea Street: 2
+  Northwest 47th Street: 2
+  Northwest 55th Diagonal: 2
+  Brevard Court: 2
+  Deerhurst Gate: 2
+  Pine Circle: 2
+  Santa Fe Trail: 2
+  Saint James Way: 2
+  Northwest 32nd Avenue: 2
+  Kings Way: 2
+  Southeast Olive Way: 2
+  54th Drive South: 2
+  Southeast 5th Avenue: 2
+  Northeast 24th Court: 2
+  Northeast 26th Terrace: 2
+  Northeast 48th Street: 2
+  Northeast 49th Street: 2
+  Lambiance Drive: 2
+  Holland Drive: 2
+  Lariat Circle: 2
+  Via Naranjas: 2
+  Cadiz Road: 2
+  Volusia Street: 2
+  Northwest 43rd Street: 2
+  Northeast 2nd Terrace: 2
+  Northeast 3rd Court: 2
+  Grand Park Place: 2
+  Southwest 5th Way: 2
+  Palmetto Park Road: 2
+  Park Place: 2
+  Psi Drive: 2
+  Northeast 78th Street: 2
+  Coquina Court: 2
+  Water Circle: 2
+  Windsor Place: 2
+  Northwest 49th Lane: 2
+  Southwest 9th Street Circle: 2
+  Boca Marina Circle: 2
+  Northeast 73rd Street: 2
+  Park of Commerce Drive: 2
+  Town Club Boulevard: 2
+  Northwest 1st Place: 2
+  Northwest 8th Court: 2
+  Northwest 8th Terrace: 2
+  Northwest 7th Courth: 2
+  Via Poinciana Lane: 2
+  Palm Beach Place: 2
+  Northwest 38th Circle: 2
+  South Military Trail: 2
+  Northwest Browning Way: 2
+  Northwest Crane Terrace: 2
+  Northwest Fitzgerald Way: 2
+  Northwest Emerson Place: 2
+  Northwest 77th Street: 2
+  Northwest 69th Circle: 2
+  95 Express: 2
+  12th Terrace: 1
+  Northeast 18th Street: 1
+  Southwest 22nd Street: 1
+  Sequoia Lane: 1
+  Northeast Harbour Terrace: 1
+  Southwest Juniper Avenue: 1
+  Bayberry Terrace: 1
+  Maypop Court: 1
+  Southwest 12th Way: 1
+  Southwest 15th Court: 1
+  Southwest 10th Terrace: 1
+  Barcelona Drive: 1
+  Cordova Drive: 1
+  Granada Drive: 1
+  Malaga Drive: 1
+  Toledo Drive: 1
+  Valencia Drive: 1
+  Rosewood Circle: 1
+  Northeast 17th Street: 1
+  Town Bay Drive: 1
+  Tulip Tree Lane: 1
+  Northwest 54th Street: 1
+  Southeast 4th Street: 1
+  Network Way: 1
+  Prairie Rose Lane: 1
+  Southwest 6th Place: 1
+  Saint Charles Place: 1
+  Saint Charles Circle: 1
+  La Pina Court: 1
+  Cottonwood Lane: 1
+  Aurelia Street: 1
+  Northwest 12th Terrace: 1
+  Northeast 7th Terrace: 1
+  Northeast 77th Street: 1
+  Northeast 8th Terrace: 1
+  Northeast 4th Drive: 1
+  Southeast 6th Street: 1
+  Southeast 7th Street: 1
+  Southeast 9th Street: 1
+  Southeast 11th Street: 1
+  Southeast 15th Street: 1
+  Northwest 3rd Way: 1
+  Southwest 19th Avenue: 1
+  Periwinkle Street: 1
+  Saint Cloud Lane: 1
+  Northwest 26th Circle: 1
+  Northwest 47th Place: 1
+  Brookshire Terrace: 1
+  Southeast 12th Street: 1
+  Lake Drive: 1
+  Fern Drive: 1
+  Northwest 44th Court: 1
+  Northwest 5th Lane: 1
+  Viento Way: 1
+  Le Lac Road: 1
+  Mizner Village: 1
+  Southeast 3rd Avenue: 1
+  Northwest 24th Street: 1
+  Northwest 12th Street: 1
+  Northeast Ocean Strand Drive: 1
+  Lake Wyman Road: 1
+  Sweetwater Lane: 1
+  Northeast 45th Road: 1
+  Northeast 50th Street: 1
+  Point Alexis: 1
+  Pointe Alexis: 1
+  Northeast 39th Street: 1
+  Park Drive East: 1
+  Fern Drive East: 1
+  Oxford Circle: 1
+  Seminole Lane: 1
+  Northwest 21st Street: 1
+  Northwest 71st Street: 1
+  Marble Court: 1
+  Northeast 6th Court: 1
+  Sea Island Terrace: 1
+  Northwest 40th Circle: 1
+  Queen's Way: 1
+  Rico Drive: 1
+  Coastal Drive: 1
+  Paulus Court: 1
+  Northwest 24th Court: 1
+  Northeast 27th Court: 1
+  Havana Drive: 1
+  Northeast 2nd Drive: 1
+  Northeast 2nd Circle: 1
+  Juneberry Court: 1
+  Canistel Lane: 1
+  Northwest 67th Drive: 1
+  45th Street: 1
+  Northwest 6th Court: 1
+  Southeast 4th Avenue: 1
+  Northwest 7th Terrace: 1
+  Northwest Executive Center Court: 1
+  East Marble Court: 1
+  Winged Foot Lane: 1
+  Orchard Ridge Lane: 1
+  Bird's Nest Terrace: 1
+  Park Drive: 1
+  Northeast 69th Street: 1
+  Northeast 71st Street: 1
+  Southwest 6th Street: 1
+  Southwest 14th Place: 1
+  Apache Lane: 1
+  Praire Rose Lane: 1
+  Seneca Lane: 1
+  Sandalwood Lane: 1
+  Hopalong Lane: 1
+  Northwest 14th Court: 1
+  Northwest 9th Way: 1
+  Northwest 11th Court: 1
+  Regency Circle: 1
+  Northwest 26th Terrace: 1
+  Northwest 25th Court: 1
+  Nassau Drive: 1
+  Northeast 4th Lane: 1
+  Broadview Drive: 1
+  Northwest 17th Street: 1
+  Northwest 36th Court: 1
+  Northwest 72nd Street: 1
+  Victoria Way: 1
+  Canterbury Way: 1
+  72nd Diagonal North: 1
+  Coronado Ridge: 1
+  214th Court South: 1
+  Northeast 5th Court: 1
+  Northeast 9th Street: 1
+  Silver Lane: 1
+  Kay Terrace: 1
+  Northeast 10th Terrace: 1
+  Golden Harbour Drive: 1
+  Phillips Drive: 1
+  Northeast 16th Street: 1
+  Northeast 5th Circle: 1
+  Northeast 28th Road: 1
+  Northeast 28th Terrace: 1
+  Northeast 31st Street: 1
+  Northwest 13th Drive: 1
+  South Rogers Circle: 1
+  Soneto Drive: 1
+  Hamaca Court: 1
+  Spanish River Boulevard Extension: 1
+  Ayre Lane: 1
+  Northwest 31st Court: 1
+  Northeast 25th Street: 1
+  Southwest 4th Circle: 1
+  Tam O Shanter Lane: 1
+  Meadows Road: 1
+  Dade Terrace: 1
+  Southwest 12th Road: 1
+  Ranger Trail: 1
+  Northwest 9th Terrace: 1
+  Southwest 5th Court: 1
+  Northeast 75th Street: 1
+  Northeast 7th Court: 1
+  Northwest 52nd Street: 1
+  Laredo Lane: 1
+  Northwest 26th Place: 1
+  Bonnie Street: 1
+  Northeast 21st Street: 1
+  Park of Commerce Way: 1
+  Southwest 15th Road: 1
+  Saint James Court: 1
+  Rio del Mar Drive: 1
+  Lilac Drive: 1
+  Via Madeira Drive: 1
+  Northeast 30th Place: 1
+  Trafalgar Circle: 1
+  Pointe Emerald Lane: 1
+  Staghorn Court: 1
+  Northwest 21st Avenue: 1
+  Northwest 25th Avenue: 1
+  Cactus Circle: 1
+  Palm Avenue West: 1
+  Del Casa Drive: 1
+  Bamboo Drive: 1
+  Orchid Drive: 1
+  Buttonwood Drive: 1
+  Hyde Circle: 1
+  Hunters Way: 1
+  Regency Court: 1
+  Oxford Way: 1
+  Hampton Place: 1
+  Hampton Circle: 1
+  Andrews Place: 1
+  Georges Way: 1
+  Communication Avenue: 1
+  Nafa Drive: 1
+  Palamino Circle: 1
+  Marina Circle: 1
+  Boca Marina Circle North: 1
+  Boca Marina Circle South: 1
+  Northwest 20th Avenue: 1
+  West Conference Drive: 1
+  Corto Circle: 1
+  Northwest 12th Road: 1
+  Northeast 1st Terrace: 1
+  Northwest 55th Terrace: 1
+  Northeast 29th Place: 1
+  Eddy Street: 1
+  Plaza Real: 1
+  Northwest 7th Drive: 1
+  Harbour Drive: 1
+  Lakeview Terrace: 1
+  Northeast 28th Place: 1
+  Northeast Marine Drive: 1
+  Southwest 7th Way: 1
+  Brant Drive: 1
+  Northwest 30th Way: 1
+  Northwest 19th Terrace: 1
+  Northwest 39th Drive: 1
+  Bailey Street: 1
+  Northwest 7th Way: 1
+  Northwest 82nd Place: 1
+  Northwest 24th Circle: 1
+  Northwest 39th Circle: 1
+  Northwest Chaucer Lane: 1
+  Northwest Alcott Circle: 1
+  Northwet Dickens Court: 1
+  Northwest Gardner Street: 1
+  Northwest Hawthone Place: 1
+  Northwest 38th Drive: 1
+  Northwest 83rd Place: 1
+  Arts Circle: 1
+  Northwest 17th Way: 1
+  Northwest 18th Way: 1
+  I 95 Express Lanes: 1
+OSMnx basic_stats（保留官方指标字段名，长度单位为米）:
+  n: 3077
+  m: 7286
+  k_avg: 4.735781605459864
+  edge_length_total: 1026921.1029999973
+  edge_length_avg: 140.94442808125135
+  streets_per_node_avg: 3.018849528761781
+  streets_per_node_counts: {0: 0, 1: 380, 2: 27, 3: 1856, 4: 784, 5: 29, 6: 1}
+  streets_per_node_proportions: {0: 0.0, 1: 0.12349691257718556, 2: 0.008774780630484237, 3: 0.6031849203769906, 4: 0.254793630159246, 5: 0.009424764380890478, 6: 0.00032499187520311994}
+  intersection_count: 2697
+  street_length_total: 650243.7269999997
+  street_segment_count: 4606
+  street_length_avg: 141.17319300911848
+  circuity_avg: 1.0696368544061503
+  self_loop_proportion: 0.0034737299174989146
+
+完整节点和边属性、OSM ID、道路几何见 boca_raton_drive_largest_scc.graphml。
