@@ -144,6 +144,24 @@ results/
 visualizations/
 result*/
 
-n2s_osm_marl/boca_raton_imfo/__pycache__
+# Generated caches, profiling runs, and experiment artifacts
+cache/
+temp_test/
+mv_cvrp/output/
+mv_cvrp/result/
+.ruff_cache/
+wandb/
+mlruns/
+events.out.tfevents.*
+*.pt
+*.pth
+*.ckpt
+*.tmp
+*.out
+*.err
+*.pid
+*.swp
+*.swo
+*.bak
 
-tests
+n2s_osm_marl/boca_raton_imfo/__pycache__

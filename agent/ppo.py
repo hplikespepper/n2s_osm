@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import time
 from datetime import datetime
 from datetime import timedelta
@@ -87,6 +88,76 @@ def _cleanup_validation_sync_files(paths):
         except OSError:
             pass
 
+
+def _copy_optimal_checkpoint(checkpoint_path, save_dir, epoch, previous_path=None,
+                             remove_previous=True):
+    """Keep a separate copy of the best validated checkpoint."""
+    optimal_path = os.path.join(save_dir, f'optimal-{epoch}.pt')
+    temporary_path = optimal_path + '.tmp'
+    try:
+        shutil.copy2(checkpoint_path, temporary_path)
+        os.replace(temporary_path, optimal_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+    if (remove_previous and previous_path is not None and previous_path != optimal_path
+            and os.path.exists(previous_path)):
+        os.remove(previous_path)
+    return optimal_path
+
+
+def _checkpoint_state(best_checkpoints, best_validation_score, optimal_checkpoint_path):
+    return {
+        'top_checkpoints': [
+            {'epoch': int(os.path.basename(path)[6:-3]), 'score': float(score)}
+            for score, path in best_checkpoints
+        ],
+        'optimal_epoch': (
+            int(os.path.basename(optimal_checkpoint_path)[8:-3])
+            if optimal_checkpoint_path is not None else None
+        ),
+        'best_validation_score': (
+            float(best_validation_score) if optimal_checkpoint_path is not None else None
+        ),
+    }
+
+
+def _restore_checkpoint_state(save_dir, state, resume_epoch):
+    """Restore rankings and discard files saved after the last atomic resume point."""
+    if not isinstance(state, dict) or not isinstance(state.get('top_checkpoints'), list):
+        raise ValueError('resume checkpoint has no checkpoint ranking state')
+    best_checkpoints = []
+    retained_paths = set()
+    for entry in state['top_checkpoints']:
+        epoch = int(entry['epoch'])
+        if epoch > resume_epoch:
+            raise ValueError('checkpoint ranking is newer than the resume checkpoint')
+        path = os.path.join(save_dir, f'epoch-{epoch}.pt')
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f'ranked checkpoint missing: {path}')
+        best_checkpoints.append((float(entry['score']), path))
+        retained_paths.add(path)
+    if len(best_checkpoints) > 10 or len(retained_paths) != len(best_checkpoints):
+        raise ValueError('invalid checkpoint ranking state')
+
+    optimal_epoch = state.get('optimal_epoch')
+    optimal_path = None
+    best_score = float('inf')
+    if optimal_epoch is not None:
+        optimal_path = os.path.join(save_dir, f'optimal-{int(optimal_epoch)}.pt')
+        if not os.path.isfile(optimal_path):
+            raise FileNotFoundError(f'optimal checkpoint missing: {optimal_path}')
+        best_score = float(state['best_validation_score'])
+
+    for name in os.listdir(save_dir):
+        path = os.path.join(save_dir, name)
+        if name.startswith('epoch-') and name.endswith('.pt') and path not in retained_paths:
+            os.remove(path)
+        if name.startswith('optimal-') and name.endswith('.pt') and path != optimal_path:
+            os.remove(path)
+    return best_checkpoints, best_score, optimal_path
+
+
 class Memory:
     def __init__(self):
         self.actions = []
@@ -154,6 +225,8 @@ class PPO:
         
         assert load_path is not None
         load_data = torch_load_cpu(load_path)
+        self.loaded_epoch = load_data.get('epoch')
+        self.loaded_checkpoint_state = load_data.get('checkpoint_state')
         # load data for actor
         model_actor = get_inner_model(self.actor)
         model_actor.load_state_dict({**model_actor.state_dict(), **load_data.get('actor', {})})
@@ -172,18 +245,26 @@ class PPO:
         print(' [*] Loading data from {}'.format(load_path))
         
     
-    def save(self, epoch):
+    def save(self, epoch, filename=None, checkpoint_state=None):
         print('Saving model and state...')
-        torch.save(
-            {
+        payload = {
                 'actor': get_inner_model(self.actor).state_dict(),
                 'critic': get_inner_model(self.critic).state_dict(),
                 'optimizer': self.optimizer.state_dict(),
                 'rng_state': torch.get_rng_state(),
                 'cuda_rng_state': torch.cuda.get_rng_state_all(),
-            },
-            os.path.join(self.opts.save_dir, 'epoch-{}.pt'.format(epoch))
-        )
+                'epoch': int(epoch),
+            }
+        if checkpoint_state is not None:
+            payload['checkpoint_state'] = checkpoint_state
+        path = os.path.join(self.opts.save_dir, filename or f'epoch-{epoch}.pt')
+        temporary_path = path + '.tmp'
+        try:
+            torch.save(payload, temporary_path)
+            os.replace(temporary_path, path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.remove(temporary_path)
     
     
     def eval(self):
@@ -453,6 +534,20 @@ def train(rank, problem, agent, val_dataset, tb_logger):
     # Start the actual training loop
     best_checkpoints = []  # list of (score, path)
     top_k = 10
+    best_validation_score = float('inf')
+    optimal_checkpoint_path = None
+    if rank == 0 and opts.problem == 'mvpdtsp' and opts.resume is not None:
+        if getattr(agent, 'loaded_checkpoint_state', None) is not None:
+            best_checkpoints, best_validation_score, optimal_checkpoint_path = (
+                _restore_checkpoint_state(
+                    opts.save_dir, agent.loaded_checkpoint_state, agent.loaded_epoch
+                )
+            )
+            print(f'Restored {len(best_checkpoints)} ranked checkpoints from epoch '
+                  f'{agent.loaded_epoch}', flush=True)
+        else:
+            print('Warning: legacy resume checkpoint has no ranking state; '
+                  'starting a new checkpoint ranking.', flush=True)
     try:
         for epoch in range(opts.epoch_start, opts.epoch_end):
             
@@ -648,20 +743,48 @@ def train(rank, problem, agent, val_dataset, tb_logger):
                 dist.barrier()
 
             # save top-k models only (based on validation avg best cost)
+            evicted_path = None
+            previous_optimal_path = None
             if rank == 0 and not opts.no_saving and opts.checkpoint_epochs != 0:
                 if val_score is not None and (epoch % opts.checkpoint_epochs == 0 or epoch == opts.epoch_end - 1):
                     ckpt_path = os.path.join(opts.save_dir, f'epoch-{epoch}.pt')
+                    saved_checkpoint = False
                     if len(best_checkpoints) < top_k:
                         agent.save(epoch)
                         best_checkpoints.append((val_score, ckpt_path))
+                        saved_checkpoint = True
                     else:
                         worst_idx = max(range(len(best_checkpoints)), key=lambda i: best_checkpoints[i][0])
                         worst_score, worst_path = best_checkpoints[worst_idx]
                         if val_score < worst_score:
                             agent.save(epoch)
-                            if os.path.exists(worst_path):
-                                os.remove(worst_path)
                             best_checkpoints[worst_idx] = (val_score, ckpt_path)
+                            evicted_path = worst_path
+                            if opts.problem != 'mvpdtsp' and os.path.exists(worst_path):
+                                os.remove(worst_path)
+                            saved_checkpoint = True
+                    if opts.problem == 'mvpdtsp' and saved_checkpoint and val_score < best_validation_score:
+                        previous_optimal_path = optimal_checkpoint_path
+                        optimal_checkpoint_path = _copy_optimal_checkpoint(
+                            ckpt_path, opts.save_dir, epoch, optimal_checkpoint_path,
+                            remove_previous=False,
+                        )
+                        best_validation_score = val_score
+                        print(f'Best validation checkpoint: {optimal_checkpoint_path} '
+                              f'(score={val_score:.6f})', flush=True)
+
+                if opts.problem == 'mvpdtsp':
+                    agent.save(
+                        epoch, filename='resume-latest.pt',
+                        checkpoint_state=_checkpoint_state(
+                            best_checkpoints, best_validation_score, optimal_checkpoint_path
+                        ),
+                    )
+                    if evicted_path is not None and os.path.exists(evicted_path):
+                        os.remove(evicted_path)
+                    if (previous_optimal_path is not None
+                            and os.path.exists(previous_optimal_path)):
+                        os.remove(previous_optimal_path)
 
             completed_epochs += 1
             

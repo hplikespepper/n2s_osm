@@ -75,7 +75,8 @@ def run(opts):
                                 init_val_met = opts.init_val_met,
                                 with_assert = opts.use_assert,
                                 num_vehicles = opts.num_vehicles,
-                                capacity = opts.capacity,
+                                capacity = (opts.vehicle_capacities if opts.problem == 'mvpdtsp'
+                                            and opts.vehicle_capacities is not None else opts.capacity),
                                 objective = opts.objective,
                                 **({"osm_place": opts.osm_place} if opts.problem == "mvpdtsp_osm" else {}))
     else:
@@ -104,7 +105,9 @@ def run(opts):
         
     else:
         if opts.resume:
-            epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])
+            epoch_resume = getattr(agent, 'loaded_epoch', None)
+            if epoch_resume is None:
+                epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])
             print("Resuming after {}".format(epoch_resume))
             agent.opts.epoch_start = epoch_resume + 1
     

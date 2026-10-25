@@ -85,11 +85,30 @@ def get_options(args=None):
 
     # newly added parameters for OSM
     parser.add_argument('--osm_place', type=str, default='Boca Raton, Florida, USA', help='OSM place string for OSM problems')
-    parser.add_argument('--capacity', type=int, default=3, help='Vehicle capacity for PDP on real map')
+    parser.add_argument('--capacity', type=int, default=None,
+                        help='Shared vehicle capacity; enables capacity constraints for mvpdtsp')
+    parser.add_argument('--vehicle_capacities', type=int, nargs='+', default=None,
+                        help='One capacity per vehicle for mvpdtsp, in vehicle-id order')
     parser.add_argument('--train_dataset', type=str, default=None, help='Pre-generated training dataset file path (for OSM problems)')
     parser.add_argument('--num_vehicles', type=int, default=2, help='number of vehicles for multi-vehicle PDTSP')
 
     opts = parser.parse_args(args)
+
+    if opts.problem == 'mvpdtsp':
+        if opts.capacity is not None and opts.vehicle_capacities is not None:
+            parser.error('--capacity and --vehicle_capacities cannot be combined')
+        if opts.capacity is not None and opts.capacity < 1:
+            parser.error('--capacity must be positive')
+        if opts.vehicle_capacities is not None:
+            if len(opts.vehicle_capacities) != opts.num_vehicles:
+                parser.error('--vehicle_capacities must contain exactly --num_vehicles values')
+            if any(value < 1 for value in opts.vehicle_capacities):
+                parser.error('all --vehicle_capacities must be positive')
+    else:
+        if opts.vehicle_capacities is not None:
+            parser.error('--vehicle_capacities is supported only for mvpdtsp')
+        if opts.capacity is None:
+            opts.capacity = 3
 
     if opts.makespan:
         if opts.objective is not None and opts.objective != 'proposed':

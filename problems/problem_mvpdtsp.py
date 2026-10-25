@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 import torch
 import pickle
 import os
+from numbers import Integral
 
 
 class MVPDTSP(object):
@@ -28,6 +29,11 @@ class MVPDTSP(object):
         self.do_assert = with_assert
         self.init_val_met = init_val_met
         self.capacity = capacity
+        # Other MVPDTSP variants keep their existing capacity behavior.
+        self.vehicle_capacities = (
+            self._normalize_vehicle_capacities(capacity)
+            if type(self) is MVPDTSP else None
+        )
         if objective is None:
             objective = 'proposed' if use_makespan else 'distance'
         if objective not in self.OBJECTIVES:
@@ -44,7 +50,24 @@ class MVPDTSP(object):
             ' Do assert:', with_assert,
             ' Objective:', self.objective,
             ' Makespan weight:', self.makespan_weight,
+            ' Vehicle capacities:', self.vehicle_capacities,
         )
+
+    def _normalize_vehicle_capacities(self, capacity):
+        if capacity is None:
+            return None
+        if isinstance(capacity, Integral) and not isinstance(capacity, bool):
+            capacities = [int(capacity)] * self.num_vehicles
+        elif isinstance(capacity, (list, tuple)):
+            capacities = list(capacity)
+        else:
+            raise ValueError('capacity must be a positive integer or a list of capacities')
+        if len(capacities) != self.num_vehicles:
+            raise ValueError('capacity list length must equal num_vehicles')
+        if any(not isinstance(value, Integral) or isinstance(value, bool) or value < 1
+               for value in capacities):
+            raise ValueError('all vehicle capacities must be positive integers')
+        return [int(value) for value in capacities]
 
     def input_feature_encoding(self, batch):
         return batch['coordinates']
@@ -265,7 +288,62 @@ class MVPDTSP(object):
         rec.scatter_(1, first, pair_index)
         rec.scatter_(1, pair_index, post_first)
 
+        if self.vehicle_capacities is not None:
+            self.check_feasibility(rec)
+
         return rec
+
+    def get_vehicle_peak_loads(self, rec):
+        """Peak number of undelivered tasks on each vehicle route."""
+        bs, total_nodes = rec.size()
+        arange = torch.arange(bs, device=rec.device)
+        peaks = torch.zeros((bs, self.num_vehicles), device=rec.device, dtype=torch.long)
+        for v in range(self.num_vehicles):
+            current = torch.full((bs,), v, device=rec.device, dtype=torch.long)
+            active = torch.ones(bs, device=rec.device, dtype=torch.bool)
+            load = torch.zeros(bs, device=rec.device, dtype=torch.long)
+            for _ in range(total_nodes):
+                nxt = rec[arange, current]
+                visiting = active & (nxt != v)
+                delta = ((nxt >= self.pickup_start) & (nxt < self.delivery_start)).long()
+                delta -= (nxt >= self.delivery_start).long()
+                load += delta * visiting.long()
+                peaks[:, v] = torch.maximum(peaks[:, v], load)
+                current = nxt
+                active = visiting
+                if not active.any():
+                    break
+        return peaks
+
+    def _capacity_anchor_mask(self, rec_removed, order):
+        """Mask anchor pairs whose inclusive route segment already reaches capacity."""
+        bs, total_nodes = rec_removed.size()
+        arange = torch.arange(bs, device=rec_removed.device)
+        last_saturated = torch.full_like(order, -1)
+        for v, capacity in enumerate(self.vehicle_capacities):
+            current = torch.full((bs,), v, device=rec_removed.device, dtype=torch.long)
+            active = torch.ones(bs, device=rec_removed.device, dtype=torch.bool)
+            load = torch.zeros(bs, device=rec_removed.device, dtype=torch.long)
+            saturated_order = torch.full((bs,), -1, device=rec_removed.device, dtype=torch.long)
+            for step in range(1, total_nodes + 1):
+                nxt = rec_removed[arange, current]
+                visiting = active & (nxt != v)
+                delta = ((nxt >= self.pickup_start) & (nxt < self.delivery_start)).long()
+                delta -= (nxt >= self.delivery_start).long()
+                load += delta * visiting.long()
+                saturated_order = torch.where(
+                    visiting & (load >= capacity),
+                    torch.full_like(saturated_order, step), saturated_order,
+                )
+                previous = last_saturated[arange, nxt]
+                last_saturated[arange, nxt] = torch.where(
+                    visiting, saturated_order, previous,
+                )
+                current = nxt
+                active = visiting
+                if not active.any():
+                    break
+        return order.unsqueeze(2) <= last_saturated.unsqueeze(1)
 
     def check_feasibility(self, rec):
 
@@ -315,14 +393,21 @@ class MVPDTSP(object):
 
         pickup_vehicle = vehicle_id[:, pickup_indices]
         delivery_vehicle = vehicle_id[:, delivery_indices]
+        assert (vehicle_id >= 0).all(), "route does not visit all nodes"
         assert (pickup_vehicle == delivery_vehicle).all(), "pickup/delivery in different vehicles"
 
         pickup_order = visited_time[:, pickup_indices]
         delivery_order = visited_time[:, delivery_indices]
         assert (pickup_order < delivery_order).all(), "deliverying without pick-up"
+        if self.vehicle_capacities is not None:
+            peaks = self.get_vehicle_peak_loads(rec)
+            capacities = torch.tensor(self.vehicle_capacities, device=rec.device)
+            assert (peaks <= capacities).all(), "vehicle capacity exceeded"
 
     def get_swap_mask(self, selected_node, visited_order_map, top2=None, rec=None):
         if rec is None:
+            if self.vehicle_capacities is not None:
+                raise ValueError('rec is required for capacity-aware action masking')
             return self.get_real_mask(selected_node, visited_order_map)
 
         selected_node = selected_node.view(-1, 1)
@@ -335,6 +420,8 @@ class MVPDTSP(object):
         mask_vehicle = vehicle_id.view(bs, gs, 1) != vehicle_id.view(bs, 1, gs)
         invalid_vehicle = (vehicle_id.view(bs, gs, 1) < 0) | (vehicle_id.view(bs, 1, gs) < 0)
         mask = mask_order | invalid_order | mask_vehicle | invalid_vehicle
+        if self.vehicle_capacities is not None:
+            mask |= self._capacity_anchor_mask(rec_removed, order)
 
         selected_node = selected_node.view(-1)
         delivery_node = self.pickup_to_delivery(selected_node)

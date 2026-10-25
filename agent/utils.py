@@ -451,6 +451,8 @@ def validate(
             results_data["num_vehicles"] = opts.num_vehicles
             results_data["objective"] = problem.objective
             results_data["makespan_weight"] = problem.makespan_weight
+        if opts.problem == 'mvpdtsp':
+            results_data["vehicle_capacities"] = problem.vehicle_capacities
         if road_multi:
             results_data["distance_source"] = "osm_directed_shortest_path"
             results_data["makespan_unit"] = "distance"
@@ -539,6 +541,15 @@ def validate(
                     "total_nodes": len(solution),
                     "coordinates": coordinates
                 }
+                if opts.problem == 'mvpdtsp':
+                    instance_data["vehicle_peak_loads"] = (
+                        problem.get_vehicle_peak_loads(rec_tensor)[0].tolist()
+                    )
+                    instance_data["initial_vehicle_peak_loads"] = (
+                        problem.get_vehicle_peak_loads(
+                            init_solution.detach().cpu().long().unsqueeze(0)
+                        )[0].tolist()
+                    )
                 if component_history is not None:
                     instance_data["component_history"] = {
                         "steps": component_history['steps'],
